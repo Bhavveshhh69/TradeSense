@@ -7,6 +7,7 @@ function App() {
       <header className="app-header">TradeSense</header>
       <main className="app-main">
         <Dashboard />
+        Bhavesh Commits this
       </main>
     </div>
   )
