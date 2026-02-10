@@ -1,0 +1,11 @@
+# Python
+backend/python/.venv/
+backend/python/.pytest_cache/
+backend/python/**/__pycache__/
+backend/python/**/*.pyc
+
+# Node
+backend/node/node_modules/
+
+# Logs
+*.log

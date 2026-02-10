@@ -1,0 +1,14 @@
+pandas
+numpy
+yfinance
+pytest
+scikit-learn
+xgboost
+joblib
+fastapi
+httpx
+uvicorn
+pydantic
+transformers
+torch
+faiss-cpu
