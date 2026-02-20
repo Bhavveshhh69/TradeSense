@@ -2,21 +2,32 @@ import { useState } from 'react'
 import { analyzeMarket } from '../api/analyze'
 
 function formatError(err) {
-  if (err?.response?.data) {
-    const data = err.response.data
-    return typeof data === 'string' ? data : JSON.stringify(data, null, 2)
+  if (err?.response?.data?.detail) {
+    return err.response.data.detail
+  }
+
+  if (typeof err?.response?.data === 'string') {
+    return err.response.data
   }
 
   if (err?.message) {
     return err.message
   }
 
-  return 'Unknown error'
+  return 'Unable to analyze right now. Please try again.'
+}
+
+function formatPercent(value, digits = 2) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 'N/A'
+  }
+
+  return `${(value * 100).toFixed(digits)}%`
 }
 
 export default function Dashboard() {
+  const [predictionData, setPredictionData] = useState(null)
   const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
   const [symbol, setSymbol] = useState('')
 
@@ -29,49 +40,33 @@ export default function Dashboard() {
 
     setLoading(true)
     setError(null)
-    setResult(null)
+    setPredictionData(null)
 
     try {
-      const data = await analyzeMarket({
-        symbol: normalizedSymbol,
-        payload: {
-          symbol: normalizedSymbol,
-          probability: 0.62,
-          feature_importance: {
-            price_vs_ema20: 0.25,
-            rsi_slope_3: 0.2,
-            macd_hist_accel: 0.15,
-            volume_ratio: 0.1,
-            price_vs_ema50: 0.05,
-          },
-          feature_values: {
-            price_vs_ema20: 0.02,
-            rsi_slope_3: -0.1,
-            macd_hist_accel: 0.0,
-            volume_ratio: 1.2,
-            price_vs_ema50: -0.01,
-          },
-          trend_state: 1,
-          momentum_state: 1,
-          risk_state: 1,
-        },
-      })
-      setResult(data)
+      const data = await analyzeMarket(normalizedSymbol)
+      setPredictionData(data)
     } catch (err) {
-      setError(formatError(err))
+      setError(`Unable to analyze ${normalizedSymbol}. ${formatError(err)}`)
     } finally {
       setLoading(false)
     }
   }
 
+  const context = predictionData?.context ?? {}
+
   return (
     <section className="dashboard">
       <p>
-        Run a deterministic market analysis using the existing Node API. The response
-        below is the direct reasoning output from the backend.
+        Enter a symbol to run live prediction analysis via the production model pipeline.
       </p>
 
-      <div className="dashboard-actions">
+      <form
+        className="dashboard-actions"
+        onSubmit={(event) => {
+          event.preventDefault()
+          handleRun()
+        }}
+      >
         <label>
           <span>Symbol</span>
           <input
@@ -82,29 +77,55 @@ export default function Dashboard() {
           />
         </label>
         <button
+          type="submit"
           className="button"
-          onClick={handleRun}
           disabled={loading || normalizedSymbol.length === 0}
         >
-          {loading ? 'Running...' : 'Run Analysis'}
+          {loading ? 'Analyzing...' : 'Run Analysis'}
         </button>
-        {loading && <span className="status">Waiting for /api/analyze...</span>}
-      </div>
+        {loading && <span className="status">Analyzing...</span>}
+      </form>
 
       {error && (
         <div className="error">
-          <strong>Error</strong>
-          <pre>{error}</pre>
+          <strong>Analysis Failed</strong>
+          <p>{error}</p>
         </div>
       )}
 
-      {result && (
-        <>
+      {predictionData && (
+        <div className="result">
           <div>
-            Analyzed Symbol: <strong>{result.symbol || normalizedSymbol}</strong>
+            Symbol: <strong>{predictionData.symbol ?? normalizedSymbol}</strong>
           </div>
-          <pre className="result">{JSON.stringify(result, null, 2)}</pre>
-        </>
+          <div>
+            Prediction: <strong>{predictionData.decision ?? 'N/A'}</strong>
+          </div>
+          <div>
+            Probability: <strong>{formatPercent(predictionData.probability, 2)}</strong>
+          </div>
+          <div>
+            Confidence Level: <strong>{predictionData.confidence_level ?? 'N/A'}</strong>
+          </div>
+          <div>
+            Strength: <strong>{formatPercent(predictionData.strength, 1)}</strong>
+          </div>
+          <div>
+            Raw Prediction: <strong>{predictionData.prediction ?? 'N/A'}</strong>
+          </div>
+          <div>
+            Decision Summary: <strong>{context.decision_summary ?? 'N/A'}</strong>
+          </div>
+          <div>
+            Confidence Summary: <strong>{context.confidence_summary ?? 'N/A'}</strong>
+          </div>
+          <div>
+            Trend Summary: <strong>{context.trend_summary ?? 'N/A'}</strong>
+          </div>
+          <div>
+            Risk Summary: <strong>{context.risk_summary ?? 'N/A'}</strong>
+          </div>
+        </div>
       )}
     </section>
   )

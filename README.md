@@ -1,199 +1,258 @@
 # TradeSense
 
-## What TradeSense Is
-- A Python-based analytics stack for market data, indicator computation, feature engineering, probabilistic modeling, and deterministic reasoning.
-- A FastAPI service that exposes the reasoning core via `POST /reason` and the full inference pipeline via `POST /analyze` on port 8000.
-- Optional news ingestion (Finnhub) and FinBERT sentiment scoring through `/analyze`.
-- A local, file-based RAG memory store for historical insight context (no external database).
-- A Node.js Express API that exposes `POST /api/analyze` on port 3000, validates input, caches responses briefly, and forwards payloads to Python.
-- A React (Vite) frontend on port 5173 that accepts a symbol input, calls the Node API, and renders the reasoning output.
+TradeSense is a multi-service market analysis system with calibrated ML inference, deterministic decision/context generation, explainability, and optional sentiment/news/context layers.
 
-## What TradeSense Is Not
-- A trading or execution system.
-- A brokerage integration or order manager.
-- An externally managed database-backed service (persistence is limited to the local RAG store).
-- An authenticated or multi-tenant service.
-- An LLM-based generation or chat system.
+## Project Overview
 
-## Architecture (Phase 8A)
+TradeSense combines:
+- Python FastAPI backend for inference and reasoning.
+- Node.js Express gateway for `/api/analyze` routing/caching.
+- React frontend dashboard for symbol-driven analysis UI.
 
-```
-React (Vite, http://localhost:5173)
-  POST /api/analyze
-Node.js Express (http://localhost:3000)
-  POST /reason
-Python FastAPI (http://localhost:8000)
-  POST /reason (reasoning core)
-  POST /analyze (inference + optional news/sentiment + RAG context)
-  Local RAG store (file-based)
-```
+## Current System Capabilities
 
-## Phase 9: Calibration & Confidence Discipline (Locked)
-This exists to prevent overconfident outputs. Raw model probabilities are often miscalibrated, so Phase 9 adds a post-model calibration step and a volatility-aware confidence cap.
+- Calibrated probability inference from engineered technical features.
+- Deterministic trade decision mapping (`BUY` / `SELL` / `HOLD`) with confidence and strength.
+- Deterministic context summaries for trend/risk interpretation.
+- Full analysis endpoint with optional sentiment/news/RAG/LLM explanation flags.
+- Backtesting and calibration evaluation (accuracy, ECE, Brier, reliability buckets).
 
-**Probability contract (mandatory calibration)**  
-- `probability` = calibrated probability  
-- `probability_raw` = raw model output  
-Calibration is required; missing artifacts fail fast.
+## Architecture Diagram
 
-Example response excerpt:
-```json
-{
-  "probability": 0.62,
-  "probability_raw": 0.66,
-  "probability_calibrated": 0.62,
-  "confidence_level": "moderate",
-  "confidence_reason": "Medium volatility regime reduces certainty; confidence capped at moderate."
-}
+```text
+Frontend (React + Vite, http://localhost:5173)
+  -> POST /api/analyze
+Node Gateway (Express, http://localhost:3000)
+  -> validate + cache + forward
+Python FastAPI (http://127.0.0.1:8000)
+  -> POST /predict  (predictor -> decision -> context)
+  -> POST /analyze  (orchestrator + calibration + reasoning + optional extras)
+  -> POST /reason   (deterministic reasoning-only)
+Artifacts:
+  -> backend/python/tradesense/models/xgboost.joblib
+  -> backend/python/tradesense/rag_store/
 ```
 
-For full design rationale and failure modes, see `docs/phase-9-calibration.md`.
+## Component Descriptions
 
-## Backend vs Frontend Responsibilities
-- Python FastAPI: Exposes `/reason` (deterministic reasoning core) and `/analyze` (full pipeline with optional news/sentiment and RAG context); persists insight summaries to the local RAG store.
-- Node.js Express: Validates requests, forwards `payload` to Python, applies a short-lived in-memory cache, and returns the Python response as-is.
-- React frontend: Accepts a stock symbol input (normalized to uppercase), disables analysis when empty, sends requests to `/api/analyze`, renders the response JSON verbatim, and surfaces network errors in the UI.
+- `backend/python/tradesense/api.py`: FastAPI app with `/analyze` and `/reason`.
+- `backend/python/tradesense/api_predict.py`: `/predict` route and runtime singletons.
+- `backend/python/tradesense/inference/predict.py`: strict feature-schema predictor with calibrated output.
+- `backend/python/tradesense/inference/decision_engine.py`: probability/confidence validation and decision mapping.
+- `backend/python/tradesense/inference/context_engine.py`: deterministic context generation.
+- `backend/python/tradesense/inference/orchestrator.py`: full Phase 6A analysis path.
+- `backend/python/tradesense/backtesting/*`: empirical validation and reliability reporting.
+- `backend/node/server/*`: gateway route, validation middleware, cache, Python forwarding.
+- `frontend/src/pages/Dashboard.jsx`: UI rendering backend response fields.
 
-## Folder Structure
+## Phase Completion Status
 
-```
-backend/
-  python/
-  node/
-frontend/
-docs/
-```
+| Area | Status |
+| --- | --- |
+| Data + Features + Modeling (Phases 1-3) | Complete |
+| Deterministic Reasoning API (Phase 4A/4B) | Complete |
+| Inference + Analyze API (Phase 6A/6B) | Complete |
+| Sentiment + News (Phase 7A/7B) | Complete (optional dependencies/keys) |
+| RAG Context + LLM Explain (Phase 8A/8B) | Complete (optional usage) |
+| Calibration Discipline (Phase 9) | Complete |
+| Explainability Package (Phase 10) | Complete |
+| Backtesting + Empirical Validation (Phase 11/11.5) | Complete |
+| Production Training Bundle (Phase 12) | Complete |
+| Predictor/Decision/Context + `/predict` (Phase 13/14) | Complete |
 
-## Run Locally (Python + Node + React)
+## Installation Instructions
 
-## Startup Order
-1. Start the Python FastAPI service first (port 8000).
-2. Start the Node.js Express service second (port 3000).
-3. Start the React frontend last (port 5173).
-
-Python service startup (Windows)
-
-Run these commands from the repository root. They assume the project Python virtual environment is at `backend/python/.venv`.
-
-PowerShell (recommended on Windows)
+### Python backend
 
 ```powershell
 cd backend/python
-. .venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-# Start FastAPI with reload; scope reload to the `tradesense` package so edits there trigger reload
-python -m uvicorn tradesense.api:app --host 127.0.0.1 --port 8000 --reload --reload-dir tradesense
 ```
 
-Command Prompt (cmd.exe)
-
-```cmd
-cd backend\python
-.venv\Scripts\activate.bat
-python -m pip install -r requirements.txt
-python -m uvicorn tradesense.api:app --host 127.0.0.1 --port 8000 --reload --reload-dir tradesense
-```
-
-Notes:
-- Always run the `python -m uvicorn tradesense.api:app` command from `backend/python` so the local `tradesense` package is importable without setting PYTHONPATH.
-- Use `--reload --reload-dir tradesense` to limit auto-reload watching to the package directory (helps reliable reload on Windows).
-- Do not run plain `uvicorn` (use `python -m uvicorn` as shown).
-
-Optional (lower latency hot loop + HTTP parser)
-
-```powershell
-cd backend/python
-python -m pip install uvloop httptools
-python -m uvicorn tradesense.api:app --host 127.0.0.1 --port 8000 --loop uvloop --http httptools
-```
-
-Node service startup
+### Node gateway
 
 ```powershell
 cd backend/node
 npm install
-node server/index.js
 ```
 
-React frontend startup
+### Frontend
 
 ```powershell
 cd frontend
 npm install
+```
+
+## Running TradeSense Locally
+
+### 1. Start Python backend (FastAPI)
+
+```powershell
+cd backend/python
+. .venv\Scripts\Activate.ps1
+python -m uvicorn tradesense.api:app --host 127.0.0.1 --port 8000 --reload --reload-dir tradesense
+```
+
+Expected URL: `http://127.0.0.1:8000`
+
+### 2. Start Node gateway
+
+```powershell
+cd backend/node
+node server/index.js
+```
+
+Expected URL: `http://localhost:3000`
+
+### 3. Start frontend
+
+```powershell
+cd frontend
 npm run dev
 ```
 
-## Port Usage
+Expected URL: `http://localhost:5173`
 
-| Service | Port | Purpose |
-| --- | --- | --- |
-| Python FastAPI | 8000 | `POST /reason` reasoning endpoint, `POST /analyze` full inference endpoint |
-| Node.js Express | 3000 | `POST /api/analyze` API gateway |
-| React (Vite) | 5173 | Frontend UI and `/api` proxy |
-
-## One End-to-End curl Example
-
-Replace `SYMBOL` with the stock symbol you want to analyze.
+### 4. Test `/predict` endpoint
 
 ```powershell
-curl.exe -s -X POST http://127.0.0.1:3000/api/analyze -H "Content-Type: application/json" --data-raw '{"symbol":"SYMBOL","payload":{"symbol":"SYMBOL","probability":0.62,"feature_importance":{"price_vs_ema20":0.25,"rsi_slope_3":0.2,"macd_hist_accel":0.15,"volume_ratio":0.1,"price_vs_ema50":0.05},"feature_values":{"price_vs_ema20":0.02,"rsi_slope_3":-0.1,"macd_hist_accel":0,"volume_ratio":1.2,"price_vs_ema50":-0.01},"trend_state":1,"momentum_state":1,"risk_state":1}}'
+curl.exe -X POST http://127.0.0.1:8000/predict -H "Content-Type: application/json" --data-raw '{"symbol":"AAPL"}'
 ```
 
-Example response for the payload above
+You should receive JSON with `decision`, `probability`, `confidence`, `strength`, and `context` fields.
 
-Note: `probability` is the calibrated probability. `probability_raw` is the raw model output.
+## API Documentation
+
+### `POST /predict`
+
+Request:
 
 ```json
 {
-  "symbol": "SYMBOL",
-  "probability": 0.62,
-  "probability_raw": 0.66,
-  "probability_calibrated": 0.62,
-  "confidence_level": "moderate",
-  "confidence_reason": "Medium volatility regime reduces certainty; confidence capped at moderate.",
-  "summary": "Moderate continuation bias",
-  "market_context": {
-    "trend": "bullish",
-    "momentum": "strengthening",
-    "volatility": "medium"
-  },
-  "key_drivers": [
-    "Price above EMA20",
-    "RSI momentum weakening",
-    "MACD momentum flat"
-  ],
-  "risk_notes": [],
-  "model_honesty": "Confidence is aligned with probability strength."
+  "symbol": "AAPL"
 }
 ```
 
-## Direct Python /analyze Example (Optional Context)
+Response (example):
 
-```powershell
-curl.exe -s -X POST http://127.0.0.1:8000/analyze -H "Content-Type: application/json" --data-raw '{"symbol":"SYMBOL","include_context":true}'
+```json
+{
+  "symbol": "AAPL",
+  "prediction": 1,
+  "probability": 0.53,
+  "confidence": 0.53,
+  "decision": "HOLD",
+  "confidence_level": "very_low",
+  "strength": 0.07,
+  "context": {
+    "decision_summary": "Model prediction is within neutral zone. No directional edge detected.",
+    "confidence_summary": "Prediction confidence is extremely weak. Signal reliability is poor.",
+    "strength_summary": "Signal strength is very weak.",
+    "trend_summary": "Market trend is mixed or transitional.",
+    "risk_summary": "Market risk conditions are normal.",
+    "model_summary": "Prediction generated using calibrated XGBoost model version phase12.",
+    "generated_at": "2026-02-20T17:15:57.391162+00:00"
+  },
+  "model_version": "phase12",
+  "timestamp": "2026-02-20T17:15:57.390587+00:00",
+  "generated_at": "2026-02-20T17:15:57.391162+00:00"
+}
 ```
 
-## Common Runtime Errors
-- Network error in frontend: Ensure the Node service is running on port 3000 and the Vite dev server is running; the frontend posts to `/api/analyze` through the Vite proxy.
-- Port already in use: Stop the process using the port or change the startup port (Python `--port`, Node `PORT`, Vite `--port`) and update any dependent proxy settings.
-- Backend not running: Start the Python service first and the Node service second; the Node API depends on the Python `/reason` endpoint.
-- News ingestion failing: Set `FINNHUB_API_KEY` before calling `/analyze` with `use_news`.
-- RAG store errors: Ensure `TRADESENSE_RAG_DIR` is writable if you override the default location.
+### `POST /analyze`
 
-## Performance Notes (Phase 4D)
-- Optional uvloop and httptools can reduce Python event-loop and HTTP parsing latency.
-- The Node in-memory cache TTL is configurable via `CACHE_TTL_SECONDS` (default 300 seconds).
-- Optional pre-warm on Node startup: set `REASONING_PREWARM=true` to send a single dummy request to `/reason`.
-- Node logs minimal timings per request: `timing total_ms=... python_ms=...`.
-- Node uses `REASONING_URL` and `REASONING_TIMEOUT_MS` for Python connectivity and timeouts.
+Runs data fetch, feature build, model inference, calibration, deterministic reasoning, and optional sentiment/news/context/explain branches.
+
+Base request:
+
+```json
+{
+  "symbol": "AAPL"
+}
+```
+
+Optional flags:
+- `use_news` (bool)
+- `include_context` (bool)
+- `explain` (bool)
+- `news` (list of strings)
+
+### `POST /reason`
+
+Reasoning-only endpoint. Caller provides probability/states/feature info and receives deterministic structured insight.
+
+## Model and Calibration Description
+
+- Persisted model bundle: `backend/python/tradesense/models/xgboost.joblib`.
+- Bundle keys: `model`, `feature_names`, `calibrator`, `calibration_meta`.
+- Calibration method: Platt scaling (`calibration_meta.method = "platt"`).
+- Inference enforces strict feature schema (exact names + order + no NaN).
+
+## Backtesting Description
+
+Backtesting modules are under `backend/python/tradesense/backtesting/`.
+
+Included outputs:
+- `overall_accuracy`
+- `expected_calibration_error` (ECE)
+- `brier_score`
+- `accuracy_by_probability_bucket`
+- Reliability curve buckets (`probability_mean`, `accuracy`, `count`)
+
+Runner:
+
+```powershell
+cd backend/python
+python -m tradesense.backtesting.run_validation --symbol AAPL
+```
+
+## Explainability and Reasoning Description
+
+- Deterministic explainability: attribution normalization + rule templates (`backend/python/tradesense/explainability/*`).
+- Deterministic reasoning output: `symbol`, calibrated probability fields, confidence reason, market context, key drivers, risk notes.
+- Optional LLM explanation branch (`explain=true`) with strict prompt guardrails.
+
+## Frontend Integration Description
+
+- Frontend API call path: `frontend/src/api/analyze.js` -> `POST /api/analyze`.
+- Dashboard renders decision/probability/confidence/strength/context from backend response (`frontend/src/pages/Dashboard.jsx`).
+- Current gateway contract expects `payload` object in request body, while frontend currently sends only `symbol`; this mismatch is tracked in limitations.
+
+## Project Structure Overview
+
+```text
+backend/
+  node/
+    server/
+  python/
+    tests/
+    tradesense/
+      backtesting/
+      explainability/
+      explainer/
+      inference/
+      models/
+      news/
+      rag/
+      rag_store/
+      sentiment/
+frontend/
+  src/
+docs/
+```
 
 ## Known Limitations
-- No trading, execution, or brokerage integration.
-- No authentication or authorization.
-- No external database; persistence is limited to the local RAG store.
-- In-memory cache is per-process and clears on restart.
-- Market data retrieval depends on yfinance availability.
-- RAG context is explainability-only and does not alter probabilities or signals.
 
-## Current Project Status
-Backend complete through Phase 8A (RAG memory and context). Optional FinBERT sentiment (Phase 7A) and Finnhub news ingestion (Phase 7B) are available via `/analyze`. Phase 5B React frontend symbol input remains wired to the Node API.
+- Frontend `/api/analyze` request body currently does not match Node gateway middleware contract (`payload` required).
+- Node test suite is stale against current forwarding behavior and currently fails.
+- Optional features depend on environment setup:
+  - `FINNHUB_API_KEY` for news ingestion.
+  - `OPENAI_API_KEY` for `explain=true` LLM explanations.
+- Timestamp fields make responses non-identical across repeated calls.
+
+## Future Roadmap
+
+1. Align frontend and Node gateway request contract for a working default dashboard flow.
+2. Update Node tests to match current `/analyze` forwarding semantics.
+3. Migrate Pydantic v1 validators/config to v2 style to remove deprecation warnings.
+4. Improve `/analyze` server-side error logging strategy (structured logs instead of tracebacks).

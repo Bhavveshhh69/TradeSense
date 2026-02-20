@@ -1,0 +1,35 @@
+{
+  "symbol": "AAPL",
+  "period": {
+    "start_date": "2025-02-20",
+    "end_date": "2026-02-06",
+    "horizon": 5,
+    "total_predictions": 243
+  },
+  "metrics": {
+    "accuracy": 0.5185185185185185,
+    "ece": 0.013177745073339464,
+    "brier_score": 0.2490496810619356,
+    "accuracy_by_confidence": {
+      "low": 0.5185185185185185
+    }
+  },
+  "calibration_metrics": {
+    "overall_accuracy": 0.5185185185185185,
+    "accuracy_by_confidence_level": {
+      "low": 0.5185185185185185
+    },
+    "accuracy_by_probability_bucket": {
+      "0.5-0.6": 0.5185185185185185
+    },
+    "expected_calibration_error": 0.013177745073339464,
+    "brier_score": 0.2490496810619356
+  },
+  "reliability_curve": [
+    {
+      "probability_mean": 0.531696263591858,
+      "accuracy": 0.5185185185185185,
+      "count": 243
+    }
+  ]
+}

@@ -6,10 +6,12 @@ from datetime import datetime, timezone
 
 from fastapi import Body, FastAPI, HTTPException
 from pydantic import ValidationError
+from tradesense.api_predict import router as predict_router
 from tradesense.reasoning_core import generate_insight
 from tradesense.schemas import AnalyzeRequest, AnalyzeResponse, ReasonRequest, ReasonResponse
 
 app = FastAPI()
+app.include_router(predict_router)
 
 
 def _get_analyze_symbol():
