@@ -1,29 +1,22 @@
 const axios = require('axios');
 
-const REASONING_URL = process.env.REASONING_URL || 'http://localhost:8000/analyze';
+const REASONING_URL = process.env.REASONING_URL || 'http://localhost:8000/predict';
 const REASONING_TIMEOUT_MS = Number(process.env.REASONING_TIMEOUT_MS || 5000);
 
-async function callReasoning(payload) {
-  // Node receives legacy /reason-style payloads from the frontend route.
-  // Convert to FastAPI AnalyzeRequest so traffic goes through full inference/calibration.
-  const symbol =
-    payload && typeof payload.symbol === 'string' ? payload.symbol.trim() : '';
-  if (!symbol) {
+async function callReasoning(symbol) {
+  const normalizedSymbol =
+    typeof symbol === 'string' ? symbol.trim().toUpperCase() : '';
+  if (!normalizedSymbol) {
     const error = new Error('Invalid analyze request');
     error.status = 400;
-    error.data = { error: 'symbol is required in payload' };
+    error.data = { error: 'symbol is required' };
     throw error;
   }
 
-  const analyzeRequest = {
-    symbol,
-    use_news: false,
-    explain: false,
-    include_context: false,
-  };
+  const predictRequest = { symbol: normalizedSymbol };
 
   try {
-    const response = await axios.post(REASONING_URL, analyzeRequest, {
+    const response = await axios.post(REASONING_URL, predictRequest, {
       timeout: REASONING_TIMEOUT_MS,
     });
     return response.data;

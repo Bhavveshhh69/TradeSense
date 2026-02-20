@@ -23,7 +23,7 @@ router.post('/analyze', validateAnalyzeRequest, async (req, res) => {
 
   const pythonStart = process.hrtime.bigint();
   try {
-    const data = await callReasoning(req.body.payload);
+    const data = await callReasoning(req.body.symbol);
     const pythonMs = elapsedMs(pythonStart);
     cache.set(cacheKey, data);
     const totalMs = elapsedMs(requestStart);

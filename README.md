@@ -23,7 +23,7 @@ TradeSense combines:
 Frontend (React + Vite, http://localhost:5173)
   -> POST /api/analyze
 Node Gateway (Express, http://localhost:3000)
-  -> validate + cache + forward
+  -> validate/normalize symbol + cache + POST /predict
 Python FastAPI (http://127.0.0.1:8000)
   -> POST /predict  (predictor -> decision -> context)
   -> POST /analyze  (orchestrator + calibration + reasoning + optional extras)
@@ -215,8 +215,9 @@ python -m tradesense.backtesting.run_validation --symbol AAPL
 ## Frontend Integration Description
 
 - Frontend API call path: `frontend/src/api/analyze.js` -> `POST /api/analyze`.
+- Frontend request body for gateway: `{"symbol":"AAPL"}`.
 - Dashboard renders decision/probability/confidence/strength/context from backend response (`frontend/src/pages/Dashboard.jsx`).
-- Current gateway contract expects `payload` object in request body, while frontend currently sends only `symbol`; this mismatch is tracked in limitations.
+- Gateway request contract is `{"symbol":"AAPL"}` (symbol-only); gateway trims/uppercases and forwards to FastAPI `POST /predict`.
 
 ## Project Structure Overview
 
@@ -243,8 +244,6 @@ docs/
 
 ## Known Limitations
 
-- Frontend `/api/analyze` request body currently does not match Node gateway middleware contract (`payload` required).
-- Node test suite is stale against current forwarding behavior and currently fails.
 - Optional features depend on environment setup:
   - `FINNHUB_API_KEY` for news ingestion.
   - `OPENAI_API_KEY` for `explain=true` LLM explanations.
@@ -252,7 +251,6 @@ docs/
 
 ## Future Roadmap
 
-1. Align frontend and Node gateway request contract for a working default dashboard flow.
-2. Update Node tests to match current `/analyze` forwarding semantics.
-3. Migrate Pydantic v1 validators/config to v2 style to remove deprecation warnings.
-4. Improve `/analyze` server-side error logging strategy (structured logs instead of tracebacks).
+1. Migrate Pydantic v1 validators/config to v2 style to remove deprecation warnings.
+2. Improve `/analyze` server-side error logging strategy (structured logs instead of tracebacks).
+3. Expand gateway integration tests to include live FastAPI `/predict` smoke coverage.
