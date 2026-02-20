@@ -74,10 +74,11 @@ def train_and_persist_model() -> None:
     # Save model bundle (model + ordered feature columns)
     model_path = Path(__file__).parent / "xgboost.joblib"
     print(f"Saving model to {model_path}...")
+    # Keep metadata contract explicit so inference can validate calibration artifacts.
     calibration_meta = {
         "method": "platt",
-        "fitted_on": "validation",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "version": "phase9",
     }
     model_bundle = {
         "model": xgb_model,
@@ -86,9 +87,16 @@ def train_and_persist_model() -> None:
         "calibration_meta": calibration_meta,
     }
     joblib.dump(model_bundle, model_path)
+
+    # Verify persisted artifact integrity to fail fast on partial/corrupt saves.
+    bundle = joblib.load(model_path)
+    required = {"model", "feature_names", "calibrator", "calibration_meta"}
+    missing = required - set(bundle.keys())
+    if missing:
+        raise RuntimeError(f"Saved bundle missing keys: {missing}")
     
-    print(f"✓ Model successfully saved to {model_path}")
-    print(f"✓ Model feature columns: {list(X_model.columns)}")
+    print(f"OK Model successfully saved to {model_path}")
+    print(f"OK Model feature columns: {list(X_model.columns)}")
 
 
 if __name__ == "__main__":
