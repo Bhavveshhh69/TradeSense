@@ -2,6 +2,8 @@ const express = require('express');
 const axios = require('axios');
 
 const analyzeRoutes = require('./routes/analyze');
+const portfolioRoutes = require('../portfolio/portfolio.routes');
+const symbolsRoutes = require('../symbols/symbols.routes');
 
 const app = express();
 
@@ -13,6 +15,8 @@ app.use((err, req, res, next) => {
   return next(err);
 });
 app.use('/api', analyzeRoutes);
+app.use('/api', portfolioRoutes);
+app.use('/api', symbolsRoutes);
 
 const PORT = process.env.PORT || 3000;
 const REASONING_URL = process.env.REASONING_URL || 'http://localhost:8000/predict';

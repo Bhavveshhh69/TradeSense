@@ -1,0 +1,30 @@
+[
+  {
+    "id": "f1967f15-a39e-423a-80f2-80aaaa896690",
+    "ticker": "AAPL",
+    "shares": 10,
+    "buy_price": 260,
+    "added_at": "2026-03-04T10:49:00.337Z"
+  },
+  {
+    "id": "112ffe4b-f268-4048-b570-63f846d69ae9",
+    "ticker": "RELIANCE.NS",
+    "shares": 20,
+    "buy_price": 650,
+    "added_at": "2026-03-04T10:52:33.954Z"
+  },
+  {
+    "id": "398fea21-1c90-4286-8c23-2e0dfd80cddd",
+    "ticker": "TCS.NS",
+    "shares": 12,
+    "buy_price": 2600,
+    "added_at": "2026-03-04T12:32:35.828Z"
+  },
+  {
+    "id": "906db43c-c265-40f4-a3a2-c0cb58dba9d8",
+    "ticker": "NVDA",
+    "shares": 10,
+    "buy_price": 100,
+    "added_at": "2026-03-04T13:05:02.864Z"
+  }
+]

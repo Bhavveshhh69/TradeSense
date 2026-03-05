@@ -1,0 +1,16 @@
+{
+	"folders": [
+		{
+			"path": "../../../.pytest_cache"
+		},
+		{
+			"path": "../.."
+		},
+		{
+			"path": "../../../docs"
+		},
+		{
+			"path": "../../../frontend"
+		}
+	]
+}
