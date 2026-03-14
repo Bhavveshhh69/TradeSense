@@ -9,3 +9,5 @@ backend/node/node_modules/
 
 # Logs
 *.log
+
+backend/node/.env

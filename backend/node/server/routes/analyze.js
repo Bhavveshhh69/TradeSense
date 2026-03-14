@@ -3,6 +3,7 @@ const express = require('express');
 const cache = require('../cache/memoryCache');
 const { callLatestPrice, callReasoning } = require('../services/reasoning');
 const symbolsService = require('../../symbols/symbols.service');
+const aiExplainer = require('../../services/ai_explainer.service');
 const validateAnalyzeRequest = require('../middleware/validate');
 
 const router = express.Router();
@@ -11,41 +12,95 @@ function elapsedMs(start) {
   return Number(process.hrtime.bigint() - start) / 1e6;
 }
 
-function normalizeDecision(decisionValue) {
-  const normalized = typeof decisionValue === 'string' ? decisionValue.trim().toUpperCase() : '';
-  if (normalized === 'BUY' || normalized === 'SELL' || normalized === 'HOLD') {
-    return normalized;
+function normalizeProbability(probabilityValue) {
+  const probability = Number(probabilityValue);
+  if (!Number.isFinite(probability)) {
+    return null;
   }
 
-  return null;
+  return Math.max(0, Math.min(1, probability));
 }
 
 function computeSignalLabel(probabilityValue) {
-  const probability = Number(probabilityValue);
-  if (!Number.isFinite(probability)) {
-    return 'NEUTRAL';
+  const probability = normalizeProbability(probabilityValue);
+  if (probability === null) {
+    return 'HOLD';
   }
 
-  if (probability > 0.65) {
+  if (probability >= 0.7) {
     return 'STRONG_BUY';
   }
 
-  if (probability >= 0.55) {
+  if (probability >= 0.58) {
     return 'BUY';
   }
 
-  if (probability >= 0.45) {
-    return 'NEUTRAL';
+  if (probability > 0.42) {
+    return 'HOLD';
   }
 
-  if (probability >= 0.35) {
+  if (probability > 0.3) {
     return 'SELL';
   }
 
   return 'STRONG_SELL';
 }
 
-function computeSignalDirection(signalLabel, probabilityValue, decisionValue) {
+function computeConfidenceTier(probabilityValue) {
+  const probability = normalizeProbability(probabilityValue);
+  if (probability === null) {
+    return 'LOW';
+  }
+
+  const distanceFromNeutral = Math.abs(probability - 0.5);
+  if (distanceFromNeutral >= 0.3) {
+    return 'STRONG';
+  }
+
+  if (distanceFromNeutral >= 0.2) {
+    return 'HIGH';
+  }
+
+  if (distanceFromNeutral >= 0.1) {
+    return 'MODERATE';
+  }
+
+  return 'LOW';
+}
+
+function formatSignalLabel(signalLabel) {
+  const labels = {
+    STRONG_BUY: 'Strong Buy',
+    BUY: 'Buy',
+    HOLD: 'Hold',
+    SELL: 'Sell',
+    STRONG_SELL: 'Strong Sell',
+  };
+  return labels[signalLabel] || 'Hold';
+}
+
+function formatConfidenceTier(confidenceTier) {
+  const tiers = {
+    LOW: 'Low',
+    MODERATE: 'Moderate',
+    HIGH: 'High',
+    STRONG: 'Strong',
+  };
+  return tiers[confidenceTier] || 'Low';
+}
+
+function computeProbabilityBand(signalLabel) {
+  const bands = {
+    STRONG_BUY: '70%-100%',
+    BUY: '58%-69%',
+    HOLD: '43%-57%',
+    SELL: '31%-42%',
+    STRONG_SELL: '0%-30%',
+  };
+  return bands[signalLabel] || '43%-57%';
+}
+
+function computeSignalDirection(signalLabel, probabilityValue) {
   if (signalLabel === 'BUY' || signalLabel === 'STRONG_BUY') {
     return 'BULLISH';
   }
@@ -54,29 +109,31 @@ function computeSignalDirection(signalLabel, probabilityValue, decisionValue) {
     return 'BEARISH';
   }
 
-  const decision = normalizeDecision(decisionValue);
-  if (decision === 'BUY') {
-    return 'BULLISH';
-  }
-
-  if (decision === 'SELL') {
-    return 'BEARISH';
-  }
-
-  const probability = Number(probabilityValue);
-  if (Number.isFinite(probability) && probability < 0.5) {
+  const probability = normalizeProbability(probabilityValue);
+  if (probability !== null && probability < 0.5) {
     return 'BEARISH';
   }
 
   return 'BULLISH';
 }
 
-function computeSignalStrength(signalLabel) {
-  if (signalLabel === 'STRONG_BUY' || signalLabel === 'STRONG_SELL') {
+function computeSignalStrength(signalLabel, confidenceTier) {
+  if (signalLabel === 'HOLD') {
+    return 'WEAK';
+  }
+
+  if (confidenceTier === 'STRONG') {
     return 'STRONG';
   }
 
-  if (signalLabel === 'BUY' || signalLabel === 'SELL') {
+  if (
+    (signalLabel === 'STRONG_BUY' || signalLabel === 'STRONG_SELL') &&
+    confidenceTier === 'HIGH'
+  ) {
+    return 'STRONG';
+  }
+
+  if (confidenceTier === 'HIGH' || confidenceTier === 'MODERATE') {
     return 'MODERATE';
   }
 
@@ -96,46 +153,32 @@ function computeMarketCondition(trendSummary) {
   return 'NEUTRAL';
 }
 
-function computeRecommendation(decisionValue, signalStrength) {
-  const decision = normalizeDecision(decisionValue);
-
-  if (decision === 'HOLD') {
-    return 'WAIT';
+function computeRecommendation(signalLabel) {
+  if (signalLabel === 'STRONG_BUY') {
+    return 'BUY';
   }
 
-  if (decision === 'BUY') {
-    if (signalStrength === 'STRONG') {
-      return 'BUY';
-    }
-
-    if (signalStrength === 'MODERATE') {
-      return 'BUY_BIAS';
-    }
-
-    return 'WATCH';
+  if (signalLabel === 'BUY') {
+    return 'BUY_BIAS';
   }
 
-  if (decision === 'SELL') {
-    if (signalStrength === 'STRONG') {
-      return 'SELL';
-    }
+  if (signalLabel === 'SELL') {
+    return 'SELL_BIAS';
+  }
 
-    if (signalStrength === 'MODERATE') {
-      return 'SELL_BIAS';
-    }
-
-    return 'WATCH';
+  if (signalLabel === 'STRONG_SELL') {
+    return 'SELL';
   }
 
   return 'WAIT';
 }
 
-function computeSignalExplanation(signalLabel, signalStrength, signalDirection) {
-  if (signalLabel === 'NEUTRAL') {
-    return `Model probability is near neutral; ${signalDirection.toLowerCase()} direction has weak conviction.`;
+function computeSignalExplanation(signalLabel, signalStrength, signalDirection, confidenceTier) {
+  if (signalLabel === 'HOLD') {
+    return `Model probability is near neutral, so the current stance is hold with ${confidenceTier.toLowerCase()} conviction.`;
   }
 
-  return `${signalStrength.toLowerCase()} ${signalDirection.toLowerCase()} signal derived from model probability band ${signalLabel}.`;
+  return `${signalStrength.toLowerCase()} ${signalDirection.toLowerCase()} signal in the ${formatSignalLabel(signalLabel)} category with ${confidenceTier.toLowerCase()} confidence.`;
 }
 
 async function normalizeAnalyzeSymbol(rawSymbol) {
@@ -165,30 +208,38 @@ function mapAnalyzeResponse(symbol, predictionData, latestPrice) {
       : typeof context.risk_summary === 'string'
         ? context.risk_summary
         : null;
-  const signalLabel = computeSignalLabel(predictionData?.probability);
-  const signalDirection = computeSignalDirection(
-    signalLabel,
-    predictionData?.probability,
-    predictionData?.decision
-  );
-  const signalStrength = computeSignalStrength(signalLabel);
+  const rawProbability = normalizeProbability(predictionData?.probability);
+  const signalLabel = computeSignalLabel(rawProbability);
+  const confidenceTier = computeConfidenceTier(rawProbability);
+  const signalDirection = computeSignalDirection(signalLabel, rawProbability);
+  const signalStrength = computeSignalStrength(signalLabel, confidenceTier);
   const marketCondition = computeMarketCondition(trendSummary);
-  const recommendation = computeRecommendation(predictionData?.decision, signalStrength);
+  const recommendation = computeRecommendation(signalLabel);
   const signalExplanation = computeSignalExplanation(
     signalLabel,
     signalStrength,
-    signalDirection
+    signalDirection,
+    confidenceTier
   );
+  const displayProbability = rawProbability === null ? null : Number(rawProbability.toFixed(2));
 
   return {
     ...predictionData,
     symbol,
+    probability: displayProbability,
+    raw_probability: predictionData?.probability,
     current_price: latestPrice.current_price,
     price_error: latestPrice.price_error,
     price_error_message: latestPrice.price_error ? latestPrice.price_error_message : null,
     trend_summary: trendSummary,
     risk_summary: riskSummary,
     signal: signalLabel,
+    prediction_category: formatSignalLabel(signalLabel),
+    probability_band: computeProbabilityBand(signalLabel),
+    confidence_tier: formatConfidenceTier(confidenceTier),
+    model_confidence_level:
+      typeof predictionData?.confidence_level === 'string' ? predictionData.confidence_level : null,
+    confidence_level: formatConfidenceTier(confidenceTier),
     signal_direction: signalDirection,
     signal_strength: signalStrength,
     market_condition: marketCondition,
@@ -210,14 +261,32 @@ router.post('/analyze', validateAnalyzeRequest, async (req, res) => {
   if (cached) {
     const totalMs = elapsedMs(requestStart);
     console.log(`timing total_ms=${totalMs.toFixed(1)} python_ms=0.0`);
-    return res.status(200).json(cached);
+    return res.status(200).json({
+      ...cached,
+      explanation: Object.prototype.hasOwnProperty.call(cached, 'explanation')
+        ? cached.explanation
+        : aiExplainer.FALLBACK_EXPLANATION,
+      market_insight: Object.prototype.hasOwnProperty.call(cached, 'market_insight')
+        ? cached.market_insight
+        : null,
+      explanation_is_fallback:
+        cached.explanation_is_fallback === true ||
+        !Object.prototype.hasOwnProperty.call(cached, 'explanation'),
+    });
   }
 
   const pythonStart = process.hrtime.bigint();
   try {
     const latestPrice = await callLatestPrice(normalizedSymbol);
     const predictionData = await callReasoning(normalizedSymbol);
-    const data = mapAnalyzeResponse(normalizedSymbol, predictionData, latestPrice);
+    const analysis = mapAnalyzeResponse(normalizedSymbol, predictionData, latestPrice);
+    const narratives = await aiExplainer.generateNarratives(analysis);
+    const data = {
+      ...analysis,
+      explanation: narratives.explanation,
+      market_insight: narratives.marketInsight,
+      explanation_is_fallback: narratives.explanationIsFallback === true,
+    };
     const pythonMs = elapsedMs(pythonStart);
     cache.set(cacheKey, data);
     const totalMs = elapsedMs(requestStart);

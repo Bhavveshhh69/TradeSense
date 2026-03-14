@@ -1,39 +1,69 @@
 import { useState } from 'react'
 import './App.css'
-import AnalysisPage from './pages/Analysis/AnalysisPage'
-import PortfolioPage from './pages/Portfolio/PortfolioPage'
+import DashboardPage from './pages/Dashboard/DashboardPage'
 
-const VIEWS = {
-  DASHBOARD: 'dashboard',
-  PORTFOLIO: 'portfolio',
+const ROUTE_SECTIONS = {
+  '/': 'dashboard',
+  '/dashboard': 'dashboard',
+  '/portfolio': 'portfolio',
+  '/analyze': 'analysis',
+  '/analysis': 'analysis',
+  '/holdings': 'holdings',
+}
+
+function getInitialSection() {
+  const pathname =
+    typeof window.location.pathname === 'string' && window.location.pathname.trim()
+      ? window.location.pathname.trim().toLowerCase()
+      : '/'
+
+  return ROUTE_SECTIONS[pathname] || 'dashboard'
 }
 
 function App() {
-  const [activeView, setActiveView] = useState(VIEWS.DASHBOARD)
+  const [activeSection, setActiveSection] = useState(() => getInitialSection())
+
+  const scrollToSection = (section) => {
+    setActiveSection(section)
+    const target = document.getElementById(section)
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }
 
   return (
     <div className="app">
       <header className="app-header">
-        <div className="app-title">TradeSense</div>
+        <div>
+          <div className="app-title">TradeSense</div>
+          <p className="app-subtitle">Single intelligent dashboard for portfolio and analysis workflows</p>
+        </div>
         <nav className="app-nav">
           <button
             type="button"
-            className={`nav-button ${activeView === VIEWS.DASHBOARD ? 'active' : ''}`}
-            onClick={() => setActiveView(VIEWS.DASHBOARD)}
+            className={`nav-button ${activeSection === 'dashboard' ? 'active' : ''}`}
+            onClick={() => scrollToSection('dashboard')}
           >
-            Analysis
+            Dashboard
           </button>
           <button
             type="button"
-            className={`nav-button ${activeView === VIEWS.PORTFOLIO ? 'active' : ''}`}
-            onClick={() => setActiveView(VIEWS.PORTFOLIO)}
+            className={`nav-button ${activeSection === 'portfolio' ? 'active' : ''}`}
+            onClick={() => scrollToSection('portfolio')}
           >
             Portfolio
+          </button>
+          <button
+            type="button"
+            className={`nav-button ${activeSection === 'analysis' ? 'active' : ''}`}
+            onClick={() => scrollToSection('analysis')}
+          >
+            Analyze
           </button>
         </nav>
       </header>
       <main className="app-main">
-        {activeView === VIEWS.DASHBOARD ? <AnalysisPage /> : <PortfolioPage />}
+        <DashboardPage initialSection={activeSection} />
       </main>
     </div>
   )

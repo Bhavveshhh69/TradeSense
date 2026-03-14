@@ -9,6 +9,9 @@ const {
 } = require('./portfolio.model');
 const symbolsService = require('../symbols/symbols.service');
 const fxService = require('../services/fx.service');
+const {
+  generatePortfolioInsights,
+} = require('../services/portfolio_intelligence.service');
 
 const REASONING_URL = process.env.REASONING_URL || 'http://localhost:8000/predict';
 const REASONING_TIMEOUT_MS = Number(process.env.REASONING_TIMEOUT_MS || 5000);
@@ -20,6 +23,8 @@ const PYTHON_API_BASE_URL =
 const DEFAULT_HISTORY_DAYS = 30;
 const MAX_HISTORY_DAYS = 90;
 const DEFAULT_BASE_CURRENCY = 'INR';
+const SYMBOL_PRICE_CACHE_TTL_MS = 10000;
+const symbolPriceCache = Object.create(null);
 
 function roundMoney(value) {
   return Number(value.toFixed(2));
@@ -161,6 +166,66 @@ async function fetchLatestPrice(symbol) {
       error_message: extractPriceErrorMessage(error, requestSymbol),
     };
   }
+}
+
+function readCachedSymbolPrice(symbol) {
+  const cacheEntry = symbolPriceCache[symbol];
+  if (!cacheEntry || typeof cacheEntry !== 'object') {
+    return null;
+  }
+
+  const ageMs = Date.now() - Number(cacheEntry.timestamp);
+  if (ageMs >= SYMBOL_PRICE_CACHE_TTL_MS) {
+    delete symbolPriceCache[symbol];
+    return null;
+  }
+
+  const cachedPrice = Number(cacheEntry.price);
+  if (!Number.isFinite(cachedPrice) || cachedPrice <= 0) {
+    delete symbolPriceCache[symbol];
+    return null;
+  }
+
+  return cachedPrice;
+}
+
+function writeCachedSymbolPrice(symbol, price) {
+  symbolPriceCache[symbol] = {
+    price,
+    timestamp: Date.now(),
+  };
+}
+
+function clearCachedSymbolPrices() {
+  Object.keys(symbolPriceCache).forEach((symbol) => {
+    delete symbolPriceCache[symbol];
+  });
+}
+
+async function fetchLatestPriceWithCache(symbol) {
+  const cachedPrice = readCachedSymbolPrice(symbol);
+  if (cachedPrice !== null) {
+    console.log(`[price-cache] symbol=${symbol} source=cache`);
+    return {
+      requested_symbol: symbol,
+      response_symbol: symbol,
+      price: cachedPrice,
+      error: false,
+      error_message: null,
+    };
+  }
+
+  console.log(`[price-cache] symbol=${symbol} source=live`);
+  const latestPrice = await fetchLatestPrice(symbol);
+
+  if (!latestPrice?.error) {
+    const livePrice = Number(latestPrice.price);
+    if (Number.isFinite(livePrice) && livePrice > 0) {
+      writeCachedSymbolPrice(symbol, livePrice);
+    }
+  }
+
+  return latestPrice;
 }
 
 async function normalizeHoldingTicker(rawTicker) {
@@ -447,7 +512,7 @@ async function calculateMetrics(holdings) {
   const baseCurrency = getBaseCurrency();
 
   if (!Array.isArray(holdings) || holdings.length === 0) {
-    return {
+    const emptyPortfolioPayload = {
       holdings: [],
       summary: {
         total_portfolio_value: 0,
@@ -456,6 +521,11 @@ async function calculateMetrics(holdings) {
         total_profit_loss_percent: 0,
         base_currency: baseCurrency,
       },
+    };
+
+    return {
+      ...emptyPortfolioPayload,
+      portfolio_intelligence: generatePortfolioInsights(emptyPortfolioPayload),
     };
   }
 
@@ -468,8 +538,11 @@ async function calculateMetrics(holdings) {
     });
   }
 
-  const latestPriceResults = await Promise.all(
-    normalizedHoldings.map((holding) => fetchLatestPrice(holding.ticker))
+  const uniqueSymbols = [...new Set(normalizedHoldings.map((holding) => holding.ticker))];
+  const latestPriceBySymbol = new Map(
+    await Promise.all(
+      uniqueSymbols.map(async (symbol) => [symbol, await fetchLatestPriceWithCache(symbol)])
+    )
   );
 
   const enrichedHoldings = [];
@@ -491,7 +564,7 @@ async function calculateMetrics(holdings) {
     }
 
     const latestPrice =
-      latestPriceResults[index] || {
+      latestPriceBySymbol.get(holdingSymbol) || {
         requested_symbol: holdingSymbol,
         response_symbol: null,
         price: null,
@@ -602,7 +675,7 @@ async function calculateMetrics(holdings) {
       ? null
       : roundPercent((totalProfitLoss / totalInvestedValue) * 100);
 
-  return {
+  const portfolioPayload = {
     holdings: enrichedHoldings,
     summary: {
       total_portfolio_value: roundMoney(totalPortfolioValue),
@@ -612,6 +685,11 @@ async function calculateMetrics(holdings) {
       has_price_errors: hasPriceErrors,
       base_currency: baseCurrency,
     },
+  };
+
+  return {
+    ...portfolioPayload,
+    portfolio_intelligence: generatePortfolioInsights(portfolioPayload),
   };
 }
 
@@ -896,6 +974,7 @@ async function deleteHolding(id) {
 }
 
 module.exports = {
+  __clearCachedSymbolPrices: clearCachedSymbolPrices,
   addHolding,
   calculateMetrics,
   deleteHolding,

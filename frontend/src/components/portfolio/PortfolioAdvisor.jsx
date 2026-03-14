@@ -1,4 +1,4 @@
-﻿function getRecommendationIcon(recommendation) {
+function getRecommendationIcon(recommendation) {
   const text = typeof recommendation === 'string' ? recommendation.toLowerCase() : ''
 
   if (text.includes('reduce')) {
@@ -6,17 +6,17 @@
   }
 
   if (text.includes('diversify') || text.includes('diversification')) {
-    return '#'
+    return '+'
   }
 
   if (text.includes('rebalance') || text.includes('rebalancing')) {
     return '~'
   }
 
-  return '*'
+  return '>'
 }
 
-export default function PortfolioAdvisor({ data }) {
+export default function PortfolioAdvisor({ data, title = 'Portfolio Advisor' }) {
   const recommendations = Array.isArray(data?.recommendations)
     ? data.recommendations.filter((item) => typeof item === 'string' && item.trim())
     : []
@@ -24,7 +24,7 @@ export default function PortfolioAdvisor({ data }) {
   return (
     <section className="portfolio-advisor-card advisor-card">
       <div className="portfolio-advisor-header">
-        <h3>Portfolio Advisor</h3>
+        <h3>{title}</h3>
       </div>
       {recommendations.length > 0 ? (
         <ul className="portfolio-advisor-list">

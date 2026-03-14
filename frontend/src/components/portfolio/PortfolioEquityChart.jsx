@@ -1,74 +1,83 @@
-﻿import {
+import {
   CartesianGrid,
   Line,
   LineChart,
+  ReferenceDot,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from 'recharts'
 
+import {
+  formatAxisDate,
+  formatLongDate,
+  formatMoney,
+  formatPercent,
+  normalizeEquityCurve,
+} from '../../utils/dashboard'
+
 const DEFAULT_DAYS = 30
 
-function formatNumber(value) {
-  if (typeof value !== 'number' || Number.isNaN(value)) {
-    return 'N/A'
+function EquityTooltip({ active, label, payload, baseCurrency }) {
+  if (!active || !Array.isArray(payload) || payload.length === 0) {
+    return null
   }
 
-  return value.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })
+  const point = payload[0]?.payload
+  const pointDate = typeof point?.date === 'string' ? point.date : label
+
+  return (
+    <div className="analysis-chart-tooltip">
+      <p>Date: {formatLongDate(pointDate)}</p>
+      <p>Value: {formatMoney(point?.portfolio_value, baseCurrency)}</p>
+      <p>Daily change: {formatPercent(point?.dailyChangePct, 2, { signed: true })}</p>
+      <p>Drawdown: {formatPercent(point?.drawdownPct, 2)}</p>
+    </div>
+  )
 }
 
-function getCurrencySymbol(currencyCode) {
-  const code = typeof currencyCode === 'string' ? currencyCode.trim().toUpperCase() : ''
-  if (code === 'USD') {
-    return '$'
-  }
-
-  if (code === 'INR') {
-    return '\u20B9'
-  }
-
-  return ''
-}
-
-function formatValue(value, currencyCode) {
-  if (typeof value !== 'number' || Number.isNaN(value)) {
-    return 'N/A'
-  }
-
-  const symbol = getCurrencySymbol(currencyCode)
-  const formatted = formatNumber(value)
-  return symbol ? `${symbol}${formatted}` : formatted
-}
-
-function formatAxisDate(date) {
-  if (typeof date !== 'string') {
-    return ''
-  }
-
-  const [year, month, day] = date.split('-')
-  if (!year || !month || !day) {
-    return date
-  }
-
-  return `${month}/${day}`
-}
-
-export default function PortfolioEquityChart({ history, days = DEFAULT_DAYS, baseCurrency = 'INR' }) {
-  const curve = Array.isArray(history?.equity_curve) ? history.equity_curve : []
+export default function PortfolioEquityChart({
+  history,
+  days = DEFAULT_DAYS,
+  baseCurrency = 'INR',
+}) {
+  const curve = normalizeEquityCurve(history)
   const resolvedDays =
-    typeof history?.days === 'number' && Number.isFinite(history.days)
-      ? history.days
-      : days
+    typeof history?.days === 'number' && Number.isFinite(history.days) ? history.days : days
+
+  if (curve.length === 0) {
+    return (
+      <section className="portfolio-history-card">
+        <div className="portfolio-history-header">
+          <h3>Portfolio Equity Curve</h3>
+          <span>Last {resolvedDays} days</span>
+        </div>
+        <p className="analysis-chart-message">No portfolio history is available yet.</p>
+      </section>
+    )
+  }
+
+  const latestPoint = curve[curve.length - 1]
+  const hasLargeMove = curve.some((point) => point.hasLargeMove)
+  const maxDrawdownPct = curve.reduce(
+    (minimumValue, point) =>
+      typeof point.drawdownPct === 'number' && point.drawdownPct < minimumValue
+        ? point.drawdownPct
+        : minimumValue,
+    0
+  )
 
   return (
     <section className="portfolio-history-card">
       <div className="portfolio-history-header">
         <h3>Portfolio Equity Curve</h3>
         <span>Last {resolvedDays} days</span>
+      </div>
+      <div className="chart-kpi-row">
+        <span>Current value: {formatMoney(latestPoint?.portfolio_value, baseCurrency)}</span>
+        <span>Daily change: {formatPercent(latestPoint?.dailyChangePct, 2, { signed: true })}</span>
+        <span>Max drawdown: {formatPercent(maxDrawdownPct, 2)}</span>
       </div>
       <div className="portfolio-history-chart">
         <ResponsiveContainer width="100%" height={280}>
@@ -77,21 +86,30 @@ export default function PortfolioEquityChart({ history, days = DEFAULT_DAYS, bas
             <XAxis dataKey="date" tickFormatter={formatAxisDate} minTickGap={24} />
             <YAxis
               dataKey="portfolio_value"
-              tickFormatter={(value) => formatValue(Number(value), baseCurrency)}
-              width={84}
+              tickFormatter={(value) => formatMoney(Number(value), baseCurrency)}
+              width={92}
             />
-            <Tooltip
-              labelFormatter={(label) => `Date: ${label}`}
-              formatter={(value) => [formatValue(Number(value), baseCurrency), 'Portfolio Value']}
-            />
+            <Tooltip content={<EquityTooltip baseCurrency={baseCurrency} />} />
             <Line
               type="monotone"
               dataKey="portfolio_value"
-              stroke="#1d4ed8"
-              strokeWidth={2}
+              stroke={hasLargeMove ? '#ea580c' : '#1d4ed8'}
+              strokeWidth={2.5}
               dot={false}
               activeDot={{ r: 4 }}
             />
+            {curve
+              .filter((point) => point.hasLargeMove)
+              .map((point) => (
+                <ReferenceDot
+                  key={`${point.date}-${point.portfolio_value}`}
+                  x={point.date}
+                  y={point.portfolio_value}
+                  r={4}
+                  fill="#dc2626"
+                  stroke="#ffffff"
+                />
+              ))}
           </LineChart>
         </ResponsiveContainer>
       </div>

@@ -20,6 +20,7 @@ const portfolioService = require('../portfolio.service');
 
 beforeEach(() => {
   jest.clearAllMocks();
+  portfolioService.__clearCachedSymbolPrices();
   fxService.getFxRate.mockImplementation(async (fromCurrency, toCurrency) => {
     if (fromCurrency === 'USD' && toCurrency === 'INR') {
       return 80;

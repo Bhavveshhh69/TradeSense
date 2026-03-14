@@ -3,6 +3,7 @@ import {
   CartesianGrid,
   Line,
   LineChart,
+  ReferenceDot,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -10,6 +11,12 @@ import {
 } from 'recharts'
 
 import { fetchStockHistory } from '../../api/analysis'
+import {
+  formatAxisDate,
+  formatLongDate,
+  formatPercent,
+  normalizePriceHistory,
+} from '../../utils/dashboard'
 
 function formatHistoryError(error, symbol) {
   if (typeof error?.response?.data?.detail === 'string' && error.response.data.detail.trim()) {
@@ -27,50 +34,55 @@ function formatHistoryError(error, symbol) {
   return `Unable to load 30-day price history for ${symbol}.`
 }
 
-function formatAxisDate(date) {
-  if (typeof date !== 'string') {
-    return ''
-  }
-
-  const [year, month, day] = date.split('-')
-  if (!year || !month || !day) {
-    return date
-  }
-
-  return `${month}/${day}`
-}
-
 function formatPrice(value) {
-  if (typeof value !== 'number' || Number.isNaN(value)) {
+  const numericValue = Number(value)
+  if (!Number.isFinite(numericValue)) {
     return 'N/A'
   }
 
-  return value.toLocaleString(undefined, {
+  return numericValue.toLocaleString(undefined, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })
 }
 
-function normalizeHistoryPoints(history) {
-  if (!Array.isArray(history)) {
-    return []
+function formatPriceWithCurrency(value, currencyCode = 'USD') {
+  const numericValue = Number(value)
+  if (!Number.isFinite(numericValue)) {
+    return 'N/A'
   }
 
-  return history
-    .map((point) => {
-      const date = typeof point?.date === 'string' ? point.date.trim() : ''
-      const close = Number(point?.close)
-      if (!date || !Number.isFinite(close)) {
-        return null
-      }
+  return numericValue.toLocaleString(undefined, {
+    style: 'currency',
+    currency: currencyCode,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+}
 
-      return {
-        date,
-        close,
-      }
-    })
-    .filter(Boolean)
-    .sort((a, b) => a.date.localeCompare(b.date))
+function PriceTooltip({ active, label, payload, currencyCode }) {
+  if (!active || !Array.isArray(payload) || payload.length === 0) {
+    return null
+  }
+
+  const point = payload[0]?.payload
+  const pointDate = typeof point?.date === 'string' ? point.date : label
+
+  return (
+    <div className="analysis-chart-tooltip">
+      <p>Date: {formatLongDate(pointDate)}</p>
+      <p>Price: {formatPriceWithCurrency(Number(point?.close), currencyCode)}</p>
+      <p>Daily change: {formatPercent(point?.dailyChangePct, 2, { signed: true })}</p>
+    </div>
+  )
+}
+
+function resolveCurrencyCode(symbol) {
+  if (typeof symbol === 'string' && (symbol.endsWith('.NS') || symbol.endsWith('.BO'))) {
+    return 'INR'
+  }
+
+  return 'USD'
 }
 
 export default function StockPriceChart({ symbol }) {
@@ -104,7 +116,7 @@ export default function StockPriceChart({ symbol }) {
           return
         }
 
-        const points = normalizeHistoryPoints(payload?.history)
+        const points = normalizePriceHistory(payload?.history)
         const responseSymbol =
           typeof payload?.symbol === 'string' && payload.symbol.trim()
             ? payload.symbol.trim().toUpperCase()
@@ -170,34 +182,50 @@ export default function StockPriceChart({ symbol }) {
     )
   }
 
+  const latestPoint = history[history.length - 1]
+  const hasLargeMove = history.some((point) => point.hasLargeMove)
+  const currencyCode = resolveCurrencyCode(resolvedSymbol || normalizedSymbol)
+
   return (
     <section className="analysis-chart-card">
       <div className="analysis-chart-header">
         <h3>Price Chart</h3>
         <span>Last 30 days</span>
       </div>
+      <div className="chart-kpi-row">
+        <span>Latest price: {formatPriceWithCurrency(latestPoint?.close, currencyCode)}</span>
+        <span>Daily move: {formatPercent(latestPoint?.dailyChangePct, 2, { signed: true })}</span>
+        <span className={hasLargeMove ? 'chart-alert chart-alert-hot' : 'chart-alert'}>
+          {hasLargeMove ? 'Large move detected (>2%)' : 'Price action within normal range'}
+        </span>
+      </div>
       <div className="analysis-chart-wrap">
         <ResponsiveContainer width="100%" height={280}>
           <LineChart data={history} margin={{ top: 10, right: 12, left: 4, bottom: 6 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
             <XAxis dataKey="date" tickFormatter={formatAxisDate} minTickGap={24} />
-            <YAxis
-              dataKey="close"
-              tickFormatter={(value) => formatPrice(Number(value))}
-              width={92}
-            />
-            <Tooltip
-              labelFormatter={(label) => `Date: ${label}`}
-              formatter={(value) => [formatPrice(Number(value)), 'Close']}
-            />
+            <YAxis dataKey="close" tickFormatter={(value) => formatPrice(Number(value))} width={92} />
+            <Tooltip content={<PriceTooltip currencyCode={currencyCode} />} />
             <Line
               type="monotone"
               dataKey="close"
-              stroke="#1d4ed8"
-              strokeWidth={2}
+              stroke={hasLargeMove ? '#ea580c' : '#1d4ed8'}
+              strokeWidth={2.5}
               dot={false}
               activeDot={{ r: 4 }}
             />
+            {history
+              .filter((point) => point.hasLargeMove)
+              .map((point) => (
+                <ReferenceDot
+                  key={`${point.date}-${point.close}`}
+                  x={point.date}
+                  y={point.close}
+                  r={4}
+                  fill="#dc2626"
+                  stroke="#ffffff"
+                />
+              ))}
           </LineChart>
         </ResponsiveContainer>
       </div>

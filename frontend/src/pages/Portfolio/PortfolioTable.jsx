@@ -120,8 +120,6 @@ export default function PortfolioTable({ holdings, onDelete, deletingId }) {
               instrument_currency: instrumentCurrency,
             } = holding || {}
 
-            console.log('render row', ticker, priceNative)
-
             const sharesValue = toFiniteNumber(shares)
             const buyPriceValue = toFiniteNumber(buyPrice)
             const currentPriceValue = toFiniteNumber(priceNative ?? currentPrice)
@@ -130,7 +128,7 @@ export default function PortfolioTable({ holdings, onDelete, deletingId }) {
             const profitLossPercentValue = toFiniteNumber(pnl_percent ?? profitLossPercent)
 
             return (
-              <tr key={ticker}>
+              <tr key={id || ticker}>
                 <td>{ticker || 'N/A'}</td>
                 <td>{formatNumber(sharesValue)}</td>
                 <td>{formatCurrencyValue(buyPriceValue, instrumentCurrency)}</td>

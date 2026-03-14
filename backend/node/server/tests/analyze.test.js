@@ -4,11 +4,21 @@ jest.mock('axios');
 jest.mock('../../symbols/symbols.service', () => ({
   normalizeSymbol: jest.fn(),
 }));
+jest.mock('../../services/ai_explainer.service', () => ({
+  FALLBACK_EXPLANATION:
+    'TradeSense AI explanation is temporarily unavailable due to API limits. Based on current model signals, the system suggests a cautious stance with weak momentum and moderate market risk.',
+  generateNarratives: jest.fn(async () => ({
+    explanation: 'Generated explanation',
+    marketInsight: 'Generated market insight',
+    explanationIsFallback: false,
+  })),
+}));
 
 const axios = require('axios');
 const app = require('../index');
 const cache = require('../cache/memoryCache');
 const symbolsService = require('../../symbols/symbols.service');
+const aiExplainer = require('../../services/ai_explainer.service');
 const actualSymbolsService = jest.requireActual('../../symbols/symbols.service');
 
 function mockPredictPayload(overrides = {}) {
@@ -37,11 +47,18 @@ beforeEach(() => {
   axios.get.mockReset();
   symbolsService.normalizeSymbol.mockReset();
   symbolsService.normalizeSymbol.mockImplementation(async (ticker) => ticker);
+  aiExplainer.generateNarratives.mockReset();
+  aiExplainer.generateNarratives.mockResolvedValue({
+    explanation: 'Generated explanation',
+    marketInsight: 'Generated market insight',
+    explanationIsFallback: false,
+  });
 });
 
 test.each([
   ['RELIANCE', 'RELIANCE.NS'],
   ['RELIANCE.NS', 'RELIANCE.NS'],
+  ['HDFCBANK.NS', 'HDFCBANK.NS'],
   ['TCS', 'TCS.NS'],
   ['INFY', 'INFY.NS'],
   ['AAPL', 'AAPL'],
@@ -70,10 +87,13 @@ test.each([
       current_price: 1419.4,
       prediction: 0,
       probability: 0.53,
-      confidence_level: 'very_low',
+      confidence_level: 'Low',
       trend_summary: 'Market trend is mixed or transitional.',
       risk_summary: 'Market risk conditions are normal.',
-      signal: 'NEUTRAL',
+      signal: 'HOLD',
+      prediction_category: 'Hold',
+      confidence_tier: 'Low',
+      probability_band: '43%-57%',
       signal_direction: 'BULLISH',
       signal_strength: 'WEAK',
       market_condition: 'NEUTRAL',
@@ -91,6 +111,7 @@ test.each([
       { symbol: normalizedSymbol },
       expect.objectContaining({ timeout: expect.any(Number) })
     );
+    expect(aiExplainer.generateNarratives).toHaveBeenCalledTimes(1);
   }
 );
 
@@ -114,6 +135,7 @@ test('POST /api/analyze reuses cached response for symbols normalized to same va
   expect(second.body).toEqual(first.body);
   expect(axios.get).toHaveBeenCalledTimes(1);
   expect(axios.post).toHaveBeenCalledTimes(1);
+  expect(aiExplainer.generateNarratives).toHaveBeenCalledTimes(1);
 });
 
 test('POST /api/analyze returns prediction with null price when latest price fetch fails', async () => {
@@ -141,7 +163,7 @@ test('POST /api/analyze returns prediction with null price when latest price fet
     current_price: null,
     prediction: 0,
     probability: 0.53,
-    signal: 'NEUTRAL',
+    signal: 'HOLD',
     signal_direction: 'BULLISH',
     signal_strength: 'WEAK',
     recommendation: 'WAIT',
@@ -210,7 +232,7 @@ test('POST /api/analyze returns 400 for malformed JSON body', async () => {
   expect(axios.get).not.toHaveBeenCalled();
 });
 
-test('POST /api/analyze maps probability 0.53 to NEUTRAL/WEAK and WAIT recommendation', async () => {
+test('POST /api/analyze maps probability 0.53 to HOLD/WEAK and WAIT recommendation', async () => {
   symbolsService.normalizeSymbol.mockResolvedValue('AAPL');
   axios.get.mockResolvedValue({
     data: {
@@ -234,7 +256,10 @@ test('POST /api/analyze maps probability 0.53 to NEUTRAL/WEAK and WAIT recommend
   expect(response.status).toBe(200);
   expect(response.body).toMatchObject({
     probability: 0.53,
-    signal: 'NEUTRAL',
+    signal: 'HOLD',
+    prediction_category: 'Hold',
+    confidence_tier: 'Low',
+    confidence_level: 'Low',
     signal_direction: 'BULLISH',
     signal_strength: 'WEAK',
     market_condition: 'NEUTRAL',
@@ -269,6 +294,8 @@ test('POST /api/analyze maps probability 0.62 with bullish trend to BUY_BIAS', a
   expect(response.body).toMatchObject({
     probability: 0.62,
     signal: 'BUY',
+    prediction_category: 'Buy',
+    confidence_tier: 'Moderate',
     signal_direction: 'BULLISH',
     signal_strength: 'MODERATE',
     market_condition: 'BULLISH',
@@ -303,6 +330,8 @@ test('POST /api/analyze maps probability 0.30 to strong bearish signal and SELL 
   expect(response.body).toMatchObject({
     probability: 0.30,
     signal: 'STRONG_SELL',
+    prediction_category: 'Strong Sell',
+    confidence_tier: 'High',
     signal_direction: 'BEARISH',
     signal_strength: 'STRONG',
     market_condition: 'BEARISH',
@@ -336,6 +365,8 @@ test('POST /api/analyze maps probability 0.35 to SELL band with moderate bearish
   expect(response.body).toMatchObject({
     probability: 0.35,
     signal: 'SELL',
+    prediction_category: 'Sell',
+    confidence_tier: 'Moderate',
     signal_direction: 'BEARISH',
     signal_strength: 'MODERATE',
     recommendation: 'SELL_BIAS',

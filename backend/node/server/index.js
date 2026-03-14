@@ -1,3 +1,21 @@
+require("dotenv").config({
+  path: require("path").resolve(__dirname, "../.env")
+});
+
+function isConfigured(name) {
+  return typeof process.env[name] === 'string' && process.env[name].trim().length > 0;
+}
+
+console.log(`[env] GROQ_API_KEY loaded: ${isConfigured('GROQ_API_KEY')}`);
+console.log(`[env] FINNHUB_API_KEY loaded: ${isConfigured('FINNHUB_API_KEY')}`);
+console.log(`[env] ALPHA_VANTAGE_API_KEY loaded: ${isConfigured('ALPHA_VANTAGE_API_KEY')}`);
+console.log(
+  `[env] MARKET_INTELLIGENCE_CACHE_TTL_MS: ${process.env.MARKET_INTELLIGENCE_CACHE_TTL_MS || 'default'}`
+);
+console.log(
+  `[env] AI_EXPLANATION_CACHE_TTL_MS: ${process.env.AI_EXPLANATION_CACHE_TTL_MS || 'default'}`
+);
+
 const express = require('express');
 const axios = require('axios');
 
