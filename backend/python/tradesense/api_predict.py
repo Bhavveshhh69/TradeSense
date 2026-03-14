@@ -4,13 +4,20 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 import logging
+import math
 from typing import Any, Dict, Tuple
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, Field, StrictStr, ValidationError, validator
-import yfinance as yf
 
-from tradesense.data_provider import get_market_data
+from tradesense.data_provider import (
+    MarketDataProviderError,
+    MarketDataResponseError,
+    MarketDataUnavailableError,
+    get_historical_prices,
+    get_latest_price,
+    get_market_data,
+)
 from tradesense.features import build_feature_matrix
 from tradesense.inference.context_engine import TradeSenseContextEngine
 from tradesense.inference.decision_engine import TradeSenseDecisionEngine
@@ -104,7 +111,14 @@ def _load_latest_feature_row(symbol: str):
             start_date.isoformat(),
             end_date.isoformat(),
             interval="1d",
+            raise_on_error=True,
         )
+    except MarketDataProviderError as exc:
+        logger.error("Market provider failed for symbol=%s", symbol)
+        raise HTTPException(status_code=500, detail="Market data provider failure") from exc
+    except MarketDataResponseError as exc:
+        logger.error("Market data response invalid for symbol=%s", symbol)
+        raise HTTPException(status_code=500, detail="Invalid market data response") from exc
     except Exception as exc:  # noqa: BLE001 - external provider isolation
         logger.error("Market data fetch failed for symbol=%s", symbol)
         raise HTTPException(status_code=500, detail="Market data fetch failure") from exc
@@ -126,39 +140,34 @@ def _load_latest_feature_row(symbol: str):
 
 
 def _load_latest_close_price(symbol: str) -> float:
-    end_date = datetime.now(tz=UTC).date()
-    start_date = end_date - timedelta(days=_PRICE_LOOKBACK_DAYS)
-
     try:
-        market_data = get_market_data(
-            [symbol],
-            start_date.isoformat(),
-            end_date.isoformat(),
-            interval="1d",
-        )
-    except Exception as exc:  # noqa: BLE001 - external provider isolation
+        return get_latest_price(symbol, lookback_days=_PRICE_LOOKBACK_DAYS, interval="1d")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "symbol must be a non-empty string",
+                "symbol": symbol,
+            },
+        ) from exc
+    except MarketDataProviderError as exc:
         logger.error("Market data fetch failed for latest price symbol=%s", symbol)
         raise HTTPException(
             status_code=500,
             detail={
-                "error": "Market data fetch failure",
+                "error": "Market data provider failure",
                 "symbol": symbol,
             },
         ) from exc
-
-    symbol_data = market_data.get(symbol)
-    if symbol_data is None or symbol_data.empty:
+    except MarketDataUnavailableError as exc:
         raise HTTPException(
             status_code=404,
             detail={
                 "error": "Price unavailable for symbol",
                 "symbol": symbol,
             },
-        )
-
-    try:
-        latest_close = float(symbol_data["close"].iloc[-1])
-    except Exception as exc:  # noqa: BLE001 - provider data shape safety
+        ) from exc
+    except MarketDataResponseError as exc:
         raise HTTPException(
             status_code=500,
             detail={
@@ -166,72 +175,44 @@ def _load_latest_close_price(symbol: str) -> float:
                 "symbol": symbol,
             },
         ) from exc
-
-    if latest_close <= 0.0:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error": "Price unavailable for symbol",
-                "symbol": symbol,
-            },
-        )
-
-    return latest_close
 
 
 def _load_historical_close_prices(symbol: str, days: int) -> list[dict[str, Any]]:
     try:
-        history_df = yf.Ticker(symbol).history(
-            period=f"{int(days)}d",
-            interval="1d",
-            auto_adjust=True,
-        )
-    except Exception as exc:  # noqa: BLE001 - external provider isolation
-        logger.error("Market data fetch failed for history symbol=%s", symbol)
+        closes = get_historical_prices(symbol, days=days, interval="1d", auto_adjust=True)
+    except ValueError as exc:
         raise HTTPException(
-            status_code=500,
+            status_code=400,
             detail={
-                "error": "Market data fetch failure",
+                "error": "symbol must be a non-empty string",
                 "symbol": symbol,
             },
         ) from exc
-
-    if history_df is None or history_df.empty:
+    except MarketDataProviderError as exc:
+        logger.error("Market provider failed for history symbol=%s", symbol)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "Market data provider failure",
+                "symbol": symbol,
+            },
+        ) from exc
+    except MarketDataUnavailableError as exc:
         raise HTTPException(
             status_code=404,
             detail={
                 "error": "Price history unavailable for symbol",
                 "symbol": symbol,
             },
-        )
-
-    close_column = None
-    if "Close" in history_df.columns:
-        close_column = "Close"
-    elif "close" in history_df.columns:
-        close_column = "close"
-
-    if close_column is None:
+        ) from exc
+    except MarketDataResponseError as exc:
         raise HTTPException(
             status_code=500,
             detail={
                 "error": "Invalid market data response",
                 "symbol": symbol,
             },
-        )
-
-    closes = history_df[[close_column]].copy()
-    closes = closes.rename(columns={close_column: "close"})
-    closes = closes.dropna(subset=["close"])
-
-    if closes.empty:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error": "Price history unavailable for symbol",
-                "symbol": symbol,
-            },
-        )
+        ) from exc
 
     history: list[dict[str, Any]] = []
     for date_index, row in closes.iterrows():
@@ -239,7 +220,7 @@ def _load_historical_close_prices(symbol: str, days: int) -> list[dict[str, Any]
             close_price = float(row["close"])
         except Exception:  # noqa: BLE001 - row-level shape safety
             continue
-        if close_price <= 0.0:
+        if not math.isfinite(close_price) or close_price <= 0.0:
             continue
 
         date_value = date_index.to_pydatetime() if hasattr(date_index, "to_pydatetime") else date_index
