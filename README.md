@@ -1,256 +1,150 @@
-# TradeSense
+# TradeSense: AI-Powered Portfolio Intelligence
 
-TradeSense is a multi-service market analysis system with calibrated ML inference, deterministic decision/context generation, explainability, and optional sentiment/news/context layers.
+TradeSense is a sophisticated market analysis and portfolio intelligence system designed to provide deep insights into financial markets and personal investment portfolios. It leverages a combination of machine learning, deterministic reasoning, and AI-driven explanations to help users make informed decisions.
 
-## Project Overview
+## Problem Solved
 
-TradeSense combines:
-- Python FastAPI backend for inference and reasoning.
-- Node.js Express gateway for `/api/analyze` routing/caching.
-- React frontend dashboard for symbol-driven analysis UI.
+In today's complex financial markets, investors face a deluge of data and a shortage of clear, actionable insights. TradeSense addresses this by:
+- **Automating Analysis**: Replacing manual, time-consuming market research with an automated ML-driven pipeline.
+- **Providing Clarity**: Translating complex model outputs into deterministic, easy-to-understand decisions and context.
+- **Unifying Portfolio View**: Offering a single, intelligent platform to track, analyze, and get advice on personal stock portfolios, even across different markets like the US and India.
+- **Explaining the "Why"**: Going beyond black-box predictions by offering AI-generated explanations for its analysis.
 
-## Current System Capabilities
+## Key Features
 
-- Calibrated probability inference from engineered technical features.
-- Deterministic trade decision mapping (`BUY` / `SELL` / `HOLD`) with confidence and strength.
-- Deterministic context summaries for trend/risk interpretation.
-- Full analysis endpoint with optional sentiment/news/RAG/LLM explanation flags.
-- Backtesting and calibration evaluation (accuracy, ECE, Brier, reliability buckets).
+- **AI-Driven Stock Analysis**: Get ML-powered predictions, decisions (BUY/SELL/HOLD), and contextual summaries for any stock.
+- **Comprehensive Portfolio Tracking**: Manage your stock holdings, track their performance, and visualize your asset allocation.
+- **Advanced Portfolio Intelligence**: Receive insights on portfolio concentration, diversification, volatility, and performance.
+- **Actionable Advisor**: Get rule-based recommendations to improve your portfolio's health (e.g., rebalancing concentrated positions).
+- **Multi-Currency Support**: Analyze portfolios containing stocks from different markets (e.g., NASDAQ and NSE) with proper currency conversion and analysis.
+- **AI Explanation Layer**: Understand the reasoning behind the system's analysis with an optional RAG- and LLM-powered explanation engine.
 
-## Architecture Diagram
+## System Architecture
 
-```text
-Frontend (React + Vite, http://localhost:5173)
-  -> POST /api/analyze
-Node Gateway (Express, http://localhost:3000)
-  -> validate/normalize symbol + cache + POST /predict
-Python FastAPI (http://127.0.0.1:8000)
-  -> POST /predict  (predictor -> decision -> context)
-  -> POST /analyze  (orchestrator + calibration + reasoning + optional extras)
-  -> POST /reason   (deterministic reasoning-only)
-Artifacts:
-  -> backend/python/tradesense/models/xgboost.joblib
-  -> backend/python/tradesense/rag_store/
-```
+TradeSense employs a modern microservice-oriented architecture:
 
-## Component Descriptions
+- **Frontend**: A responsive **React** application provides the user interface for portfolio management and stock analysis.
+- **Node.js Backend (API Gateway)**: An **Express** server acts as the primary API for the frontend. It handles user requests, manages portfolio data (stored in a JSON file), and communicates with the Python backend. It serves as an orchestration and enrichment layer.
+- **Python Backend (ML & Data Service)**: A **FastAPI** server that exposes the core machine learning, data, and intelligence capabilities. This includes the ML prediction pipeline, market data access, and the AI explanation services.
 
-- `backend/python/tradesense/api.py`: FastAPI app with `/analyze` and `/reason`.
-- `backend/python/tradesense/api_predict.py`: `/predict` route and runtime singletons.
-- `backend/python/tradesense/inference/predict.py`: strict feature-schema predictor with calibrated output.
-- `backend/python/tradesense/inference/decision_engine.py`: probability/confidence validation and decision mapping.
-- `backend/python/tradesense/inference/context_engine.py`: deterministic context generation.
-- `backend/python/tradesense/inference/orchestrator.py`: full Phase 6A analysis path.
-- `backend/python/tradesense/backtesting/*`: empirical validation and reliability reporting.
-- `backend/node/server/*`: gateway route, validation middleware, cache, Python forwarding.
-- `frontend/src/pages/Dashboard.jsx`: UI rendering backend response fields.
+The system is designed with a clear separation of concerns, which allows for scalability and maintainability.
 
-## Phase Completion Status
+## Technology Stack
 
-| Area | Status |
-| --- | --- |
-| Data + Features + Modeling (Phases 1-3) | Complete |
-| Deterministic Reasoning API (Phase 4A/4B) | Complete |
-| Inference + Analyze API (Phase 6A/6B) | Complete |
-| Sentiment + News (Phase 7A/7B) | Complete (optional dependencies/keys) |
-| RAG Context + LLM Explain (Phase 8A/8B) | Complete (optional usage) |
-| Calibration Discipline (Phase 9) | Complete |
-| Explainability Package (Phase 10) | Complete |
-| Backtesting + Empirical Validation (Phase 11/11.5) | Complete |
-| Production Training Bundle (Phase 12) | Complete |
-| Predictor/Decision/Context + `/predict` (Phase 13/14) | Complete |
+- **Frontend**: React, Vite, Axios, Recharts
+- **Backend (Node.js)**: Express.js, Axios, Jest
+- **Backend (Python)**: FastAPI, Uvicorn, Pandas, NumPy, Scikit-learn, XGBoost, Joblib, Pytest, Transformers, Torch, FAISS-CPU
+- **Data Sources**: yfinance (market data), Finnhub (news)
 
-## Installation Instructions
+## Data Flow
 
-### Python backend
+A typical request, such as analyzing a stock, follows this path:
+1. The **React Frontend** sends a request to the **Node.js API Gateway**.
+2. The **Node.js Gateway** validates the request, checks its in-memory cache, and then calls the relevant endpoints on the **Python ML Service**. This might involve fetching the latest price and running a prediction.
+3. The **Python Service** executes the ML pipeline: it fetches market data from **yfinance**, builds features, and uses the trained XGBoost model to generate a prediction and deterministic insights.
+4. The Python service returns the structured data to the Node.js gateway.
+5. The **Node.js Gateway** enriches this data (e.g., adding a human-readable recommendation) and sends the final response to the frontend.
+6. The **React Frontend** displays the information to the user.
 
-```powershell
-cd backend/python
-python -m pip install -r requirements.txt
-```
+## Machine Learning Pipeline
 
-### Node gateway
+The core of TradeSense is its ML pipeline for stock prediction:
 
-```powershell
-cd backend/node
-npm install
-```
+1.  **Data Ingestion**: Fetches historical market data (OHLCV) using the `yfinance` library.
+2.  **Indicator Calculation**: Computes technical indicators like RSI, EMA, and MACD.
+3.  **Feature Engineering**: Creates a feature matrix from the raw data and indicators.
+4.  **Prediction**: A pre-trained **XGBoost** model (`xgboost.joblib`) predicts the probability of a 5-day price continuation. The model is calibrated to ensure the probabilities are reliable.
+5.  **Deterministic Reasoning**: The model's probability output is fed into a rule-based engine that generates a clear `decision` (BUY, SELL, HOLD), `confidence_level`, and contextual summaries about market trends and risks.
 
-### Frontend
+## Market Intelligence Layer
 
-```powershell
-cd frontend
-npm install
-```
+This layer is responsible for providing real-time and historical market data. It is primarily implemented in the Python backend and uses the `yfinance` library to fetch data from Yahoo Finance.
 
-## Running TradeSense Locally
+## Portfolio Intelligence Engine
 
-### 1. Start Python backend (FastAPI)
+Located in the Node.js backend, this engine provides high-level insights into the user's portfolio. It calculates:
+- **Total Portfolio Value & P&L**: With correct handling of multi-currency assets.
+- **Asset Allocation**: The weight of each holding in the portfolio.
+- **Concentration & Diversification**: Metrics to assess portfolio risk.
+- **Volatility & Performance**: Analysis of the best and worst-performing assets.
 
-```powershell
-cd backend/python
-. .venv\Scripts\Activate.ps1
-python -m uvicorn tradesense.api:app --host 127.0.0.1 --port 8000 --reload --reload-dir tradesense
-```
+## AI Explanation Layer
 
-Expected URL: `http://127.0.0.1:8000`
+For users who want to dig deeper, TradeSense offers an advanced AI explanation layer. When enabled, it uses:
+- **RAG (Retrieval-Augmented Generation)**: To retrieve historical context about past predictions for a given stock from a local vector store.
+- **LLM Integration (OpenAI/Groq)**: To generate a human-readable explanation of the current analysis, incorporating the latest prediction, deterministic insights, and historical context.
 
-### 2. Start Node gateway
+## External APIs Used
 
-```powershell
-cd backend/node
-node server/index.js
-```
+- **yfinance**: The primary source for historical and real-time market data.
+- **Finnhub**: An optional source for news headlines to power the sentiment analysis feature. Requires a `FINNHUB_API_KEY`.
+- **OpenAI/Groq**: Optional for the AI Explanation Layer. Requires an `OPENAI_API_KEY` or `GROQ_API_KEY`.
 
-Expected URL: `http://localhost:3000`
+## How the System Runs (Node + Python interaction)
 
-### 3. Start frontend
+The two backends work in concert:
+- The **Python backend** is the "brain," focusing on complex data processing and machine learning. It runs as a standalone FastAPI server.
+- The **Node.js backend** is the "face" for the frontend, providing a stable API, handling user-specific data like portfolios, and orchestrating calls to the Python backend.
 
-```powershell
-cd frontend
-npm run dev
-```
+This dual-backend architecture allows for using the best tool for the job: Python for data science and Node.js for scalable web services.
 
-Expected URL: `http://localhost:5173`
+## Environment Variables
 
-### 4. Test `/predict` endpoint
+The system uses a `.env` file in the `backend/node` directory to manage configuration and API keys. Key variables include:
 
-```powershell
-curl.exe -X POST http://127.0.0.1:8000/predict -H "Content-Type: application/json" --data-raw '{"symbol":"AAPL"}'
-```
+- `PORT`: The port for the Node.js server (e.g., 3000).
+- `REASONING_URL`: The URL of the Python FastAPI server (e.g., `http://localhost:8000/predict`).
+- `FINNHUB_API_KEY`: For news fetching.
+- `GROQ_API_KEY` / `OPENAI_API_KEY`: For the AI explanation layer.
 
-You should receive JSON with `decision`, `probability`, `confidence`, `strength`, and `context` fields.
+## How to Run the Project
 
-## API Documentation
+1.  **Start the Python Backend:**
+    ```sh
+    cd backend/python
+    # Install dependencies
+    pip install -r requirements.txt
+    # Run the server
+    uvicorn tradesense.api:app --reload --port 8000
+    ```
 
-### `POST /predict`
+2.  **Start the Node.js Backend:**
+    ```sh
+    cd backend/node
+    # Install dependencies
+    npm install
+    # Run the server
+    node server/index.js
+    ```
 
-Request:
+3.  **Start the Frontend:**
+    ```sh
+    cd frontend
+    # Install dependencies
+    npm install
+    # Run the development server
+    npm run dev
+    ```
 
-```json
-{
-  "symbol": "AAPL"
-}
-```
+You can now access the application at `http://localhost:5173`.
 
-Response (example):
+## Testing Overview
 
-```json
-{
-  "symbol": "AAPL",
-  "prediction": 1,
-  "probability": 0.53,
-  "confidence": 0.53,
-  "decision": "HOLD",
-  "confidence_level": "very_low",
-  "strength": 0.07,
-  "context": {
-    "decision_summary": "Model prediction is within neutral zone. No directional edge detected.",
-    "confidence_summary": "Prediction confidence is extremely weak. Signal reliability is poor.",
-    "strength_summary": "Signal strength is very weak.",
-    "trend_summary": "Market trend is mixed or transitional.",
-    "risk_summary": "Market risk conditions are normal.",
-    "model_summary": "Prediction generated using calibrated XGBoost model version phase12.",
-    "generated_at": "2026-02-20T17:15:57.391162+00:00"
-  },
-  "model_version": "phase12",
-  "timestamp": "2026-02-20T17:15:57.390587+00:00",
-  "generated_at": "2026-02-20T17:15:57.391162+00:00"
-}
-```
+The project has a strong emphasis on testing:
+- **Python**: Uses `pytest` for unit and integration tests covering data processing, feature engineering, ML modeling, and API endpoints.
+- **Node.js**: Uses `Jest` and `Supertest` to test the API endpoints, services, and repository layers.
 
-### `POST /analyze`
+To run the tests:
+- **Python**: `cd backend/python && pytest`
+- **Node.js**: `cd backend/node && npm test`
 
-Runs data fetch, feature build, model inference, calibration, deterministic reasoning, and optional sentiment/news/context/explain branches.
+## Limitations
 
-Base request:
+- The portfolio data is stored in a local JSON file, which is not suitable for a multi-user or production environment.
+- The system's performance depends on the availability of external APIs like Yahoo Finance.
 
-```json
-{
-  "symbol": "AAPL"
-}
-```
+## Future Improvements
 
-Optional flags:
-- `use_news` (bool)
-- `include_context` (bool)
-- `explain` (bool)
-- `news` (list of strings)
-
-### `POST /reason`
-
-Reasoning-only endpoint. Caller provides probability/states/feature info and receives deterministic structured insight.
-
-## Model and Calibration Description
-
-- Persisted model bundle: `backend/python/tradesense/models/xgboost.joblib`.
-- Bundle keys: `model`, `feature_names`, `calibrator`, `calibration_meta`.
-- Calibration method: Platt scaling (`calibration_meta.method = "platt"`).
-- Inference enforces strict feature schema (exact names + order + no NaN).
-
-## Backtesting Description
-
-Backtesting modules are under `backend/python/tradesense/backtesting/`.
-
-Included outputs:
-- `overall_accuracy`
-- `expected_calibration_error` (ECE)
-- `brier_score`
-- `accuracy_by_probability_bucket`
-- Reliability curve buckets (`probability_mean`, `accuracy`, `count`)
-
-Runner:
-
-```powershell
-cd backend/python
-python -m tradesense.backtesting.run_validation --symbol AAPL
-```
-
-## Explainability and Reasoning Description
-
-- Deterministic explainability: attribution normalization + rule templates (`backend/python/tradesense/explainability/*`).
-- Deterministic reasoning output: `symbol`, calibrated probability fields, confidence reason, market context, key drivers, risk notes.
-- Optional LLM explanation branch (`explain=true`) with strict prompt guardrails.
-
-## Frontend Integration Description
-
-- Frontend API call path: `frontend/src/api/analyze.js` -> `POST /api/analyze`.
-- Frontend request body for gateway: `{"symbol":"AAPL"}`.
-- Dashboard renders decision/probability/confidence/strength/context from backend response (`frontend/src/pages/Dashboard.jsx`).
-- Gateway request contract is `{"symbol":"AAPL"}` (symbol-only); gateway trims/uppercases and forwards to FastAPI `POST /predict`.
-
-## Project Structure Overview
-
-```text
-backend/
-  node/
-    server/
-  python/
-    tests/
-    tradesense/
-      backtesting/
-      explainability/
-      explainer/
-      inference/
-      models/
-      news/
-      rag/
-      rag_store/
-      sentiment/
-frontend/
-  src/
-docs/
-```
-
-## Known Limitations
-
-- Optional features depend on environment setup:
-  - `FINNHUB_API_KEY` for news ingestion.
-  - `OPENAI_API_KEY` for `explain=true` LLM explanations.
-- Timestamp fields make responses non-identical across repeated calls.
-
-## Future Roadmap
-
-1. Migrate Pydantic v1 validators/config to v2 style to remove deprecation warnings.
-2. Improve `/analyze` server-side error logging strategy (structured logs instead of tracebacks).
-3. Expand gateway integration tests to include live FastAPI `/predict` smoke coverage.
+- Migrate portfolio storage to a database for better scalability and multi-user support.
+- Expand the range of financial instruments beyond stocks.
+- Enhance the Portfolio Advisor with more sophisticated, customizable strategies.
