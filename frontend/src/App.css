@@ -932,6 +932,11 @@ textarea {
   color: var(--ts-negative);
 }
 
+.side-pill-watchlist {
+  background: rgba(255, 228, 166, 0.52);
+  color: #8a5200;
+}
+
 .side-pill-buy {
   background: rgba(143, 250, 155, 0.28);
   color: var(--ts-positive);

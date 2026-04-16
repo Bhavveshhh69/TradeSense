@@ -8,7 +8,8 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from tradesense.intraday.contracts import Bar, DataQualityReport  # noqa: E402
+from tradesense.intraday.contracts import Bar, BracketSpec, DataQualityReport, NoTrade, StrategyContext, TradeProposal  # noqa: E402
+from tradesense.intraday.engine import IntradayEngine  # noqa: E402
 from tradesense.intraday.market import get_market_profile, resolve_market  # noqa: E402
 from tradesense.intraday.provider import bars_to_frame  # noqa: E402
 from tradesense.intraday.quality import DataQualityValidator  # noqa: E402
@@ -169,3 +170,257 @@ def test_walk_forward_metrics_report_sentiment_uplift(monkeypatch):
     assert report["market"] == "US"
     assert "xgboost" in report["models"]
     assert "sentiment_uplift" in report["models"]["xgboost"]
+
+
+def test_strategy_marks_pre_window_as_watchlist():
+    profile = get_market_profile("AAPL")
+    strategy = ORBSessionVWAPStrategy()
+    context = StrategyContext(
+        symbol="AAPL",
+        market_profile=profile,
+        data_quality=DataQualityReport(0, 2, 1.0, False, True, True, True, True, ()),
+        bars=[],
+        latest_timestamp=datetime.fromisoformat("2026-04-15T09:45:00-04:00"),
+        latest_session_date=datetime.fromisoformat("2026-04-15T09:45:00-04:00").date(),
+        feature_frame=pd.DataFrame(
+            [
+                {
+                    "session_date": datetime.fromisoformat("2026-04-15T09:45:00-04:00").date(),
+                    "is_regular_session": True,
+                    "timestamp": pd.Timestamp("2026-04-15T09:45:00-04:00"),
+                    "close": 101.0,
+                    "opening_range_high": 102.0,
+                    "opening_range_low": 99.0,
+                    "session_vwap": 100.5,
+                    "vwap_slope": 0.1,
+                    "breakout_strength": 0.0,
+                    "opening_range_width": 3.0,
+                }
+            ]
+        ),
+    )
+
+    proposal = strategy.propose_trade(context)
+    assert isinstance(proposal, NoTrade)
+    assert proposal.decision == "WATCHLIST"
+    assert proposal.reason_type == "pending_setup"
+
+
+def test_engine_returns_watchlist_for_threshold_miss_without_sentiment_blocker():
+    profile = get_market_profile("AAPL")
+    timestamp = datetime.fromisoformat("2026-04-15T10:15:00-04:00")
+    bars = [_bar("AAPL", "2026-04-15T10:15:00-04:00", 100.0, market="US", exchange="NASDAQ", timezone=profile.timezone)]
+
+    class _Provider:
+        def fetch_bars(self, request):
+            return bars
+
+    class _Validator:
+        def validate(self, bars_arg, profile_arg, timeframe_min):
+            return DataQualityReport(0, 1, 1.0, False, True, True, True, True, ())
+
+    class _Strategy:
+        def build_context(self, symbol, bars_arg, profile_arg, quality):
+            return StrategyContext(
+                symbol=symbol,
+                market_profile=profile_arg,
+                data_quality=quality,
+                bars=bars_arg,
+                latest_timestamp=timestamp,
+                latest_session_date=timestamp.date(),
+                feature_frame=pd.DataFrame(),
+            )
+
+        def propose_trade(self, context):
+            return TradeProposal(
+                symbol="AAPL",
+                market="US",
+                strategy_family="orb_vwap_continuation",
+                side="LONG",
+                entry_timestamp=timestamp,
+                features={name: 0.1 for name in FEATURE_COLUMNS},
+                rationale=("opening-range breakout",),
+                brackets=BracketSpec(
+                    entry_price=100.0,
+                    stop_price=99.0,
+                    take_profit_price=101.5,
+                    risk_unit=1.0,
+                ),
+            )
+
+    class _Registry:
+        def load_or_train(self, market, timeframe_min=15):
+            return type(
+                "Artifact",
+                (),
+                {
+                    "threshold": 0.62,
+                    "feature_names": tuple(FEATURE_COLUMNS),
+                    "model_name": "xgboost",
+                    "metadata": {"market": market},
+                    "model_bench_summary": {},
+                    "promotion_gate": {"passed": True, "reason": "Promotion gate passed.", "market": market, "artifact_timestamp": "2026-04-15T14:00:00+00:00"},
+                },
+            )()
+
+        def predict_probability(self, artifact, feature_frame):
+            return 0.60
+
+    class _Sentiment:
+        def gate_threshold(self, base_threshold, side, snapshot):
+            return base_threshold, "Sentiment is mixed, so the long threshold stays unchanged."
+
+        def snapshot(self, symbol, profile_arg, decision_time, manual_news=None):
+            return type(
+                "Snapshot",
+                (),
+                {
+                    "stock_sentiment_score": 0.0,
+                    "sector_sentiment_score": None,
+                    "contextual_sentiment_score": 0.0,
+                    "sentiment_confidence": 0.0,
+                    "sentiment_gate_reason": "Sentiment coverage is weak, so the news gate is neutral.",
+                    "stock_article_count": 0,
+                    "sector_article_count": 0,
+                    "sector": None,
+                    "sector_available": False,
+                    "stock_articles": (),
+                    "sector_articles": (),
+                    "to_dict": lambda self=None: {
+                        "stock_sentiment_score": 0.0,
+                        "sector_sentiment_score": None,
+                        "contextual_sentiment_score": 0.0,
+                        "sentiment_confidence": 0.0,
+                        "sentiment_gate_reason": "Sentiment coverage is weak, so the news gate is neutral.",
+                        "stock_article_count": 0,
+                        "sector_article_count": 0,
+                        "sector": None,
+                        "sector_available": False,
+                        "stock_articles": [],
+                        "sector_articles": [],
+                    },
+                },
+            )()
+
+    engine = IntradayEngine(
+        provider=_Provider(),
+        validator=_Validator(),
+        strategy=_Strategy(),
+        registry=_Registry(),
+        sentiment_engine=_Sentiment(),
+    )
+
+    result = engine.predict("AAPL")
+    assert result["decision"] == "WATCHLIST"
+    assert result["decision_reason_type"] == "threshold_miss"
+    assert result["no_trade_reason"] == "Model probability did not clear the live expectancy threshold."
+
+
+def test_engine_blocks_actionable_setup_when_promotion_gate_fails():
+    profile = get_market_profile("AAPL")
+    timestamp = datetime.fromisoformat("2026-04-15T10:15:00-04:00")
+    bars = [_bar("AAPL", "2026-04-15T10:15:00-04:00", 100.0, market="US", exchange="NASDAQ", timezone=profile.timezone)]
+
+    class _Provider:
+        def fetch_bars(self, request):
+            return bars
+
+    class _Validator:
+        def validate(self, bars_arg, profile_arg, timeframe_min):
+            return DataQualityReport(0, 1, 1.0, False, True, True, True, True, ())
+
+    class _Strategy:
+        def build_context(self, symbol, bars_arg, profile_arg, quality):
+            return StrategyContext(
+                symbol=symbol,
+                market_profile=profile_arg,
+                data_quality=quality,
+                bars=bars_arg,
+                latest_timestamp=timestamp,
+                latest_session_date=timestamp.date(),
+                feature_frame=pd.DataFrame(),
+            )
+
+        def propose_trade(self, context):
+            return TradeProposal(
+                symbol="AAPL",
+                market="US",
+                strategy_family="orb_vwap_continuation",
+                side="LONG",
+                entry_timestamp=timestamp,
+                features={name: 0.2 for name in FEATURE_COLUMNS},
+                rationale=("opening-range breakout",),
+                brackets=BracketSpec(entry_price=100.0, stop_price=99.0, take_profit_price=101.5, risk_unit=1.0),
+            )
+
+    class _Registry:
+        def load_or_train(self, market, timeframe_min=15):
+            return type(
+                "Artifact",
+                (),
+                {
+                    "threshold": 0.55,
+                    "feature_names": tuple(FEATURE_COLUMNS),
+                    "model_name": "xgboost",
+                    "metadata": {"market": market},
+                    "model_bench_summary": {},
+                    "promotion_gate": {
+                        "passed": False,
+                        "reason": "Promotion blocked because holdout net expectancy is not positive.",
+                        "market": market,
+                        "artifact_timestamp": "2026-04-15T14:00:00+00:00",
+                    },
+                },
+            )()
+
+        def predict_probability(self, artifact, feature_frame):
+            return 0.72
+
+    class _Sentiment:
+        def gate_threshold(self, base_threshold, side, snapshot):
+            return base_threshold, "Sentiment is mixed, so the long threshold stays unchanged."
+
+        def snapshot(self, symbol, profile_arg, decision_time, manual_news=None):
+            return type(
+                "Snapshot",
+                (),
+                {
+                    "stock_sentiment_score": 0.0,
+                    "sector_sentiment_score": None,
+                    "contextual_sentiment_score": 0.0,
+                    "sentiment_confidence": 0.0,
+                    "sentiment_gate_reason": "Sentiment coverage is weak, so the news gate is neutral.",
+                    "stock_article_count": 0,
+                    "sector_article_count": 0,
+                    "sector": None,
+                    "sector_available": False,
+                    "stock_articles": (),
+                    "sector_articles": (),
+                    "to_dict": lambda self=None: {
+                        "stock_sentiment_score": 0.0,
+                        "sector_sentiment_score": None,
+                        "contextual_sentiment_score": 0.0,
+                        "sentiment_confidence": 0.0,
+                        "sentiment_gate_reason": "Sentiment coverage is weak, so the news gate is neutral.",
+                        "stock_article_count": 0,
+                        "sector_article_count": 0,
+                        "sector": None,
+                        "sector_available": False,
+                        "stock_articles": [],
+                        "sector_articles": [],
+                    },
+                },
+            )()
+
+    engine = IntradayEngine(
+        provider=_Provider(),
+        validator=_Validator(),
+        strategy=_Strategy(),
+        registry=_Registry(),
+        sentiment_engine=_Sentiment(),
+    )
+
+    result = engine.predict("AAPL")
+    assert result["decision"] == "WATCHLIST"
+    assert result["decision_reason_type"] == "promotion_blocked"
+    assert "Promotion blocked" in result["no_trade_reason"]

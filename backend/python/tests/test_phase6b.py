@@ -23,6 +23,8 @@ def _sample_response(symbol: str = "AAPL"):
         "probability": 0.64,
         "confidence": 0.09,
         "decision": "LONG",
+        "decision_reason_type": None,
+        "actionability_state": "actionable",
         "confidence_level": "moderate",
         "strength": 0.09,
         "context": {
@@ -44,6 +46,7 @@ def _sample_response(symbol: str = "AAPL"):
         "take_profit_price": 196.5,
         "forced_exit_time": "2026-04-15T19:45:00+00:00",
         "no_trade_reason": None,
+        "promotion_gate": {"passed": True, "reason": "Promotion gate passed.", "market": "US", "artifact_timestamp": "2026-04-15T14:00:00+00:00"},
         "data_quality": {
             "missing_bar_count": 0,
             "expected_bar_count": 25,
@@ -68,6 +71,10 @@ def _sample_response(symbol: str = "AAPL"):
         "current_price": 194.25,
         "trade_window": {"start": "10:00", "end": "11:00", "opening_range_bars": 2},
         "threshold": 0.52,
+        "base_threshold": 0.55,
+        "effective_threshold": 0.52,
+        "threshold_adjustment_reason": "Supportive sentiment slightly lowered the long-entry threshold.",
+        "threshold_gap": 0.12,
         "stock_sentiment_score": 0.42,
         "sector_sentiment_score": 0.18,
         "contextual_sentiment_score": 0.348,
@@ -109,6 +116,8 @@ def test_analyze_response_schema_correctness(monkeypatch):
         "probability",
         "confidence",
         "decision",
+        "decision_reason_type",
+        "actionability_state",
         "confidence_level",
         "strength",
         "context",
@@ -124,6 +133,7 @@ def test_analyze_response_schema_correctness(monkeypatch):
         "take_profit_price",
         "forced_exit_time",
         "no_trade_reason",
+        "promotion_gate",
         "data_quality",
         "summary",
         "market_context",
@@ -133,6 +143,10 @@ def test_analyze_response_schema_correctness(monkeypatch):
         "current_price",
         "trade_window",
         "threshold",
+        "base_threshold",
+        "effective_threshold",
+        "threshold_adjustment_reason",
+        "threshold_gap",
         "stock_sentiment_score",
         "sector_sentiment_score",
         "contextual_sentiment_score",
@@ -143,7 +157,7 @@ def test_analyze_response_schema_correctness(monkeypatch):
     }
     assert expected_keys.issubset(set(data.keys()))
     assert data["market"] in {"US", "IN"}
-    assert data["decision"] in {"LONG", "SHORT", "NO_TRADE"}
+    assert data["decision"] in {"LONG", "SHORT", "WATCHLIST", "NO_TRADE"}
     assert isinstance(data["data_quality"], dict)
     assert isinstance(data["key_drivers"], list)
     assert isinstance(data["risk_notes"], list)

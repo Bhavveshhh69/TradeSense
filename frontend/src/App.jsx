@@ -779,7 +779,7 @@ function ValidationPanel({ instrument, validation, loading, error, onRunValidati
     return (
       <StatePanel
         title="Validation needs an instrument"
-        message="Lock a supported instrument first. Validation then runs the 12-month leak-safe backtest window from the product UI."
+        message="Lock a supported instrument first. Validation then runs the intraday walk-forward replay for the active market model from the product UI."
         compact
       />
     )
@@ -789,7 +789,7 @@ function ValidationPanel({ instrument, validation, loading, error, onRunValidati
     <SectionCard
       kicker="Validation"
       title="Empirical check"
-      caption="This reports directional classification quality, calibration error, and reliability. It does not claim profitability."
+      caption="This reports intraday trade evidence first, then calibration diagnostics as secondary evidence. Promotion status, cost stress, and sample quality are shown explicitly."
       action={
         <button type="button" className="secondary-button" onClick={onRunValidation} disabled={loading}>
           {loading ? 'Running...' : 'Run validation'}
@@ -801,20 +801,100 @@ function ValidationPanel({ instrument, validation, loading, error, onRunValidati
       {validation ? (
         <div className="validation-stack">
           <div className="metric-grid metric-grid-four">
-            <MetricCard label="Total predictions" value={String(validation.total_predictions || 0)} />
+            <MetricCard label="Trade count" value={String(validation.trade_metrics?.trade_count || 0)} />
             <MetricCard
-              label="Accuracy"
-              value={formatPercent(validation.accuracy, 2, { scale: 100 })}
+              label="Net expectancy"
+              value={Number(validation.trade_metrics?.net_expectancy ?? 0).toFixed(4)}
             />
-            <MetricCard label="ECE" value={Number(validation.ece ?? 0).toFixed(4)} />
-            <MetricCard label="Brier score" value={Number(validation.brier_score ?? 0).toFixed(4)} />
+            <MetricCard label="Profit factor" value={Number(validation.trade_metrics?.profit_factor ?? 0).toFixed(2)} />
+            <MetricCard label="Wilson lower bound" value={formatPercent(validation.trade_metrics?.wilson_lower_bound, 2, { scale: 100 })} />
           </div>
 
           <div className="validation-period">
             <strong>
               {validation.period?.start_date} to {validation.period?.end_date}
             </strong>
-            <span>Horizon: {validation.period?.horizon || 5} trading days</span>
+            <span>{validation.sample_quality?.execution_assumption || `Horizon: ${validation.period?.horizon || 1}`}</span>
+          </div>
+
+          <div className="content-grid content-grid-two">
+            <div className="validation-card">
+              <h3>Promotion gate</h3>
+              <div className="validation-list">
+                <div className="validation-list-row">
+                  <span>Status</span>
+                  <strong>{validation.promotion_gate?.passed ? 'Passed' : 'Blocked'}</strong>
+                </div>
+                <div className="validation-list-row">
+                  <span>Reason</span>
+                  <strong>{validation.promotion_gate?.reason || 'Not returned'}</strong>
+                </div>
+                <div className="validation-list-row">
+                  <span>Artifact time</span>
+                  <strong>{validation.promotion_gate?.artifact_timestamp || 'Not returned'}</strong>
+                </div>
+              </div>
+            </div>
+
+            <div className="validation-card">
+              <h3>Sample quality</h3>
+              <div className="validation-list">
+                <div className="validation-list-row">
+                  <span>Total sessions</span>
+                  <strong>{validation.sample_quality?.total_sessions ?? 0}</strong>
+                </div>
+                <div className="validation-list-row">
+                  <span>Eligible sessions</span>
+                  <strong>{validation.sample_quality?.eligible_sessions ?? 0}</strong>
+                </div>
+                <div className="validation-list-row">
+                  <span>Traded sessions</span>
+                  <strong>{validation.sample_quality?.traded_sessions ?? 0}</strong>
+                </div>
+                <div className="validation-list-row">
+                  <span>Skipped sessions</span>
+                  <strong>{validation.sample_quality?.skipped_sessions ?? 0}</strong>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="content-grid content-grid-two">
+            <div className="validation-card">
+              <h3>Cost assumptions</h3>
+              <div className="validation-list">
+                <div className="validation-list-row">
+                  <span>Stress multiplier</span>
+                  <strong>{Number(validation.cost_assumptions?.stress_cost_multiplier ?? 0).toFixed(2)}x</strong>
+                </div>
+                <div className="validation-list-row">
+                  <span>Round-trip cost</span>
+                  <strong>{Number(validation.cost_assumptions?.round_trip_cost_r ?? 0).toFixed(4)}R</strong>
+                </div>
+                <div className="validation-list-row">
+                  <span>Stressed cost</span>
+                  <strong>{Number(validation.cost_assumptions?.stressed_round_trip_cost_r ?? 0).toFixed(4)}R</strong>
+                </div>
+                <div className="validation-list-row">
+                  <span>Survivorship note</span>
+                  <strong>{validation.sample_quality?.survivorship_note || 'Not returned'}</strong>
+                </div>
+              </div>
+            </div>
+
+            <div className="validation-card">
+              <h3>Regime breakdown</h3>
+              <div className="validation-list">
+                {Object.entries(validation.regime_breakdown?.volatility || {}).map(([bucket, summary]) => (
+                  <div key={bucket} className="validation-list-row">
+                    <span>{bucket}</span>
+                    <strong>
+                      {summary.trade_count || 0} trades · {Number(summary.net_expectancy ?? 0).toFixed(4)}R
+                    </strong>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
 
           <div className="content-grid content-grid-two">
@@ -849,11 +929,18 @@ function ValidationPanel({ instrument, validation, loading, error, onRunValidati
               </div>
             </div>
           </div>
+
+          <div className="metric-grid metric-grid-four">
+            <MetricCard label="Accuracy" value={formatPercent(validation.accuracy, 2, { scale: 100 })} />
+            <MetricCard label="ECE" value={Number(validation.ece ?? 0).toFixed(4)} />
+            <MetricCard label="Brier score" value={Number(validation.brier_score ?? 0).toFixed(4)} />
+            <MetricCard label="Total predictions" value={String(validation.total_predictions || 0)} />
+          </div>
         </div>
       ) : (
         <StatePanel
           title="No validation run yet"
-          message="Run the validation pass to see accuracy, calibration error, Brier score, and reliability buckets for the active instrument."
+          message="Run the validation pass to see intraday trade evidence, promotion status, stressed-cost assumptions, and calibration diagnostics for the active instrument."
           compact
         />
       )}
@@ -1060,7 +1147,8 @@ function AnalysisPage({
   }
 
   const currencyCode = quote?.currency || getCurrencyCode(selectedInstrument)
-  const noTrade = analysis?.signal === 'NO_TRADE'
+  const noTrade = analysis?.signal === 'NO_TRADE' || analysis?.actionability_state === 'blocked'
+  const watchlist = analysis?.signal === 'WATCHLIST' || analysis?.actionability_state === 'monitor'
 
   return (
     <div className="page-stack">
@@ -1070,7 +1158,9 @@ function AnalysisPage({
           title={analysis?.decision_label || 'No analysis run yet'}
           caption={
             noTrade
-              ? analysis?.no_trade_reason || 'The model blocked the setup.'
+              ? analysis?.no_trade_reason || analysis?.signal_explanation || 'The model blocked the setup.'
+              : watchlist
+                ? analysis?.signal_explanation || analysis?.no_trade_reason || 'The setup is on watchlist until one more condition clears.'
               : analysis?.signal_explanation || 'Run analysis to build the decision state for this symbol.'
           }
           action={
@@ -1090,13 +1180,13 @@ function AnalysisPage({
               value={analysis ? formatPercent(analysis.probability, 2, { scale: 100 }) : 'N/A'}
             />
             <MetricCard label="Confidence" value={analysis?.confidence_level || 'N/A'} />
-            <MetricCard label="Model" value={analysis?.model_name || 'N/A'} />
+            <MetricCard label="State" value={analysis?.actionability_state || analysis?.model_name || 'N/A'} />
           </div>
 
           {analysis ? (
             <div className="content-grid content-grid-two">
               <div className="analysis-card">
-                <h3>{noTrade ? 'Execution blockers' : 'Trade plan'}</h3>
+                <h3>{noTrade ? 'Execution blockers' : watchlist ? 'Watchlist trigger' : 'Trade plan'}</h3>
                 <div className="validation-list">
                   <div className="validation-list-row">
                     <span>Entry</span>
@@ -1114,11 +1204,23 @@ function AnalysisPage({
                     <span>Forced exit</span>
                     <strong>{analysis.forced_exit_time || 'N/A'}</strong>
                   </div>
+                  <div className="validation-list-row">
+                    <span>Live threshold</span>
+                    <strong>{Number(analysis.effective_threshold ?? analysis.threshold ?? 0).toFixed(4)}</strong>
+                  </div>
+                  <div className="validation-list-row">
+                    <span>Threshold gap</span>
+                    <strong>
+                      {analysis.threshold_gap === null || analysis.threshold_gap === undefined
+                        ? 'N/A'
+                        : Number(analysis.threshold_gap).toFixed(4)}
+                    </strong>
+                  </div>
                 </div>
               </div>
 
               <div className="analysis-card">
-                <h3>{noTrade ? 'Observed context' : 'Why the setup exists'}</h3>
+                <h3>{noTrade ? 'Observed context' : watchlist ? 'What unlocks the trade' : 'Why the setup exists'}</h3>
                 <div className="analysis-note-list">
                   <article>
                     <span>Trend summary</span>
@@ -1135,6 +1237,14 @@ function AnalysisPage({
                   <article>
                     <span>Sentiment gate</span>
                     <strong>{analysis.sentiment_gate_reason || 'Not returned'}</strong>
+                  </article>
+                  <article>
+                    <span>Decision reason</span>
+                    <strong>{analysis.decision_reason_type || 'Actionable setup'}</strong>
+                  </article>
+                  <article>
+                    <span>Promotion gate</span>
+                    <strong>{analysis.promotion_gate?.reason || 'Not returned'}</strong>
                   </article>
                 </div>
               </div>

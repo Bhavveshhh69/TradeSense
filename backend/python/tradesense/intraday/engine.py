@@ -76,13 +76,17 @@ class IntradayEngine:
         proposal = self.strategy.propose_trade(context)
 
         if isinstance(proposal, NoTrade):
+            decision = proposal.decision
             no_trade_reason = proposal.reason
+            reason_type = proposal.reason_type
             summary = self._build_summary(
-                decision="NO_TRADE",
+                decision=decision,
                 setup_side=None,
-                probability=0.0,
+                probability=None,
                 no_trade_reason=no_trade_reason,
                 profile=profile,
+                reason_type=reason_type,
+                threshold_gap=None,
             )
             return {
                 "symbol": normalized_symbol,
@@ -93,8 +97,15 @@ class IntradayEngine:
                 "prediction": 0,
                 "probability": 0.0,
                 "confidence": 0.0,
-                "decision": "NO_TRADE",
-                "confidence_level": self._confidence_level(0.0, artifact.threshold),
+                "decision": decision,
+                "decision_reason_type": reason_type,
+                "actionability_state": "monitor" if decision == "WATCHLIST" else "blocked",
+                "confidence_level": self._confidence_level(
+                    probability=None,
+                    threshold=artifact.threshold,
+                    decision=decision,
+                    reason_type=reason_type,
+                ),
                 "strength": 0.0,
                 "context": self._build_context_payload(profile, quality, None, artifact, sentiment_snapshot),
                 "model_version": f"intraday-{artifact.model_name}",
@@ -109,6 +120,7 @@ class IntradayEngine:
                 "take_profit_price": None,
                 "forced_exit_time": None,
                 "no_trade_reason": no_trade_reason,
+                "promotion_gate": artifact.promotion_gate,
                 "data_quality": quality.to_dict(),
                 "summary": summary,
                 "market_context": {
@@ -123,24 +135,38 @@ class IntradayEngine:
                 "current_price": latest_close,
                 "trade_window": profile.entry_window_policy,
                 "threshold": artifact.threshold,
+                "base_threshold": artifact.threshold,
+                "effective_threshold": artifact.threshold,
+                "threshold_adjustment_reason": "Threshold evaluation was skipped because the setup did not advance past the deterministic gate.",
+                "threshold_gap": None,
                 **sentiment_snapshot.to_dict(),
             }
 
         feature_frame = proposal_features(proposal)
         probability = self.registry.predict_probability(artifact, feature_frame)
+        base_threshold = artifact.threshold
         adjusted_threshold, gate_reason = self.sentiment_engine.gate_threshold(
-            artifact.threshold,
+            base_threshold,
             proposal.side,
             sentiment_snapshot,
         )
-        decision = proposal.side if probability >= adjusted_threshold else "NO_TRADE"
-        if adjusted_threshold > 1.0:
+        threshold_gap = float(round(probability - adjusted_threshold, 4))
+        if not artifact.promotion_gate.get("passed", False):
+            decision = "WATCHLIST"
+            reason_type = "promotion_blocked"
+            no_trade_reason = str(artifact.promotion_gate.get("reason", "Live promotion gate blocked the setup."))
+        elif adjusted_threshold > 1.0:
             decision = "NO_TRADE"
-            no_trade_reason = gate_reason
-        elif decision == "NO_TRADE":
-            no_trade_reason = gate_reason or "Model probability did not clear the live expectancy threshold"
-        else:
+            reason_type = "sentiment_veto"
+            no_trade_reason = gate_reason or "Strong adverse sentiment vetoed the setup."
+        elif probability >= adjusted_threshold:
+            decision = proposal.side
+            reason_type = None
             no_trade_reason = None
+        else:
+            decision = "WATCHLIST"
+            reason_type = "threshold_miss"
+            no_trade_reason = "Model probability did not clear the live expectancy threshold."
 
         forced_exit_dt = combine_local(
             context.latest_session_date,
@@ -153,6 +179,8 @@ class IntradayEngine:
             probability=probability,
             no_trade_reason=no_trade_reason,
             profile=profile,
+            reason_type=reason_type,
+            threshold_gap=threshold_gap,
         )
         return {
             "symbol": normalized_symbol,
@@ -164,7 +192,14 @@ class IntradayEngine:
             "probability": float(round(probability, 4)),
             "confidence": float(round(abs(probability - adjusted_threshold), 4)),
             "decision": decision,
-            "confidence_level": self._confidence_level(probability, adjusted_threshold),
+            "decision_reason_type": reason_type,
+            "actionability_state": "actionable" if decision in {"LONG", "SHORT"} else "monitor" if decision == "WATCHLIST" else "blocked",
+            "confidence_level": self._confidence_level(
+                probability=probability,
+                threshold=adjusted_threshold,
+                decision=decision,
+                reason_type=reason_type,
+            ),
             "strength": float(round(max(0.0, probability - adjusted_threshold), 4)),
             "context": self._build_context_payload(profile, quality, proposal, artifact, sentiment_snapshot),
             "model_version": f"intraday-{artifact.model_name}",
@@ -179,6 +214,7 @@ class IntradayEngine:
             "take_profit_price": round(proposal.brackets.take_profit_price, 4),
             "forced_exit_time": forced_exit_dt.isoformat(),
             "no_trade_reason": no_trade_reason,
+            "promotion_gate": artifact.promotion_gate,
             "data_quality": quality.to_dict(),
             "summary": summary,
             "market_context": {
@@ -193,11 +229,29 @@ class IntradayEngine:
             "current_price": latest_close,
             "trade_window": profile.entry_window_policy,
             "threshold": adjusted_threshold,
+            "base_threshold": base_threshold,
+            "effective_threshold": adjusted_threshold,
+            "threshold_adjustment_reason": gate_reason,
+            "threshold_gap": threshold_gap,
             **sentiment_snapshot.to_dict(),
         }
 
     def backtest_market(self, market: str, timeframe_min: int = DEFAULT_TIMEFRAME_MIN) -> dict[str, Any]:
         return self.registry.grouped_walk_forward_report(market, timeframe_min=timeframe_min)
+
+    def validate_symbol(
+        self,
+        symbol: str,
+        timeframe_min: int = DEFAULT_TIMEFRAME_MIN,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> dict[str, Any]:
+        return self.registry.validate_symbol_intraday(
+            symbol,
+            timeframe_min=timeframe_min,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
     def _build_sentiment_snapshot(
         self,
@@ -231,15 +285,46 @@ class IntradayEngine:
             payload["model_metadata"] = artifact.metadata
         return payload
 
-    def _build_summary(self, decision: str, setup_side: str | None, probability: float, no_trade_reason: str | None, profile) -> str:
+    def _build_summary(
+        self,
+        decision: str,
+        setup_side: str | None,
+        probability: float | None,
+        no_trade_reason: str | None,
+        profile,
+        reason_type: str | None,
+        threshold_gap: float | None,
+    ) -> str:
+        if decision == "WATCHLIST":
+            if reason_type == "threshold_miss" and probability is not None and threshold_gap is not None:
+                return (
+                    f"Watchlist only for the current {profile.market} session. The {setup_side.lower()} setup is valid, "
+                    f"but the estimated win probability is {probability:.0%} and remains {abs(threshold_gap):.0%} below the live threshold."
+                )
+            if reason_type == "promotion_blocked":
+                return (
+                    f"Watchlist only for the current {profile.market} session. The price-action setup exists, "
+                    f"but live execution is blocked until the market artifact clears the promotion gate. {no_trade_reason or ''}".strip()
+                )
+            return (
+                f"Watchlist for the current {profile.market} session. {no_trade_reason or 'The setup is forming but has not completed its entry conditions yet.'}"
+            )
         if decision == "NO_TRADE":
-            return f"No intraday trade is being taken for the current {profile.market} session. {no_trade_reason or 'The setup did not clear the entry policy.'}"
+            return f"No intraday trade is being taken for the current {profile.market} session. {no_trade_reason or 'A hard blocker prevented execution.'}"
         return (
             f"{decision.title()} intraday setup detected from the {setup_side.lower()} ORB+VWAP family "
             f"with estimated same-session win probability of {probability:.0%}."
         )
 
-    def _confidence_level(self, probability: float, threshold: float) -> str:
+    def _confidence_level(self, probability: float | None, threshold: float, decision: str, reason_type: str | None) -> str:
+        if decision == "NO_TRADE" and reason_type in {"hard_blocker", "window_closed", "sentiment_veto"}:
+            return "high"
+        if decision == "WATCHLIST" and reason_type == "promotion_blocked":
+            return "high"
+        if decision == "WATCHLIST" and reason_type == "pending_setup":
+            return "moderate"
+        if probability is None:
+            return "low"
         distance = abs(probability - threshold)
         if distance >= 0.2:
             return "strong"

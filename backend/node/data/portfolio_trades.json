@@ -1,1 +1,36 @@
-[]
+[
+  {
+    "id": "0c3cbf17-2e19-4dab-84df-1989dc418aa1",
+    "ticker": "GOLDENTOBC.NS",
+    "symbol": "GOLDENTOBC",
+    "normalized": "GOLDENTOBC.NS",
+    "display_name": "Golden Tobacco Limited",
+    "market": "IN",
+    "exchange": "NSE",
+    "instrument_type": "Equity",
+    "instrument_currency": "INR",
+    "side": "BUY",
+    "quantity": 10,
+    "price": 25.0499992370605,
+    "note": null,
+    "source": "manual",
+    "occurred_at": "2026-04-16T04:20:01.319Z"
+  },
+  {
+    "id": "11768b32-add9-4326-b7d1-f4df75d35fc9",
+    "ticker": "ITC.NS",
+    "symbol": "ITC",
+    "normalized": "ITC.NS",
+    "display_name": "ITC Limited",
+    "market": "IN",
+    "exchange": "NSE",
+    "instrument_type": "Equity",
+    "instrument_currency": "INR",
+    "side": "BUY",
+    "quantity": 500,
+    "price": 302.45001220703125,
+    "note": null,
+    "source": "manual",
+    "occurred_at": "2026-04-16T04:22:45.863Z"
+  }
+]

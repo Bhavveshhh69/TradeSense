@@ -105,11 +105,19 @@ class ORBSessionVWAPStrategy(StrategyFamily):
         entry_end = combine_local(context.latest_session_date, parse_hhmm(profile.entry_window_policy["end"]), profile)
         latest_ts = latest["timestamp"].to_pydatetime()
         if latest_ts < entry_start:
-            return NoTrade("Entry window has not opened yet")
+            return NoTrade(
+                "Entry window has not opened yet",
+                decision="WATCHLIST",
+                reason_type="pending_setup",
+            )
         if latest_ts > entry_end:
-            return NoTrade("Entry window is closed")
+            return NoTrade("Entry window is closed", reason_type="window_closed")
         if not context.data_quality.usable_for_live:
-            return NoTrade("Data quality gate failed", tuple(context.data_quality.warnings))
+            return NoTrade(
+                "Data quality gate failed",
+                reason_type="hard_blocker",
+                details=tuple(context.data_quality.warnings),
+            )
 
         long_ok = bool(
             latest["close"] > latest["opening_range_high"]
@@ -124,7 +132,11 @@ class ORBSessionVWAPStrategy(StrategyFamily):
             and latest["breakout_strength"] < 0
         )
         if not long_ok and not short_ok:
-            return NoTrade(self.describe_no_trade(context))
+            return NoTrade(
+                self.describe_no_trade(context),
+                decision="WATCHLIST",
+                reason_type="pending_setup",
+            )
 
         side = "LONG" if long_ok else "SHORT"
         risk_unit = max(float(latest["opening_range_width"]), float(latest["close"]) * 0.0035)

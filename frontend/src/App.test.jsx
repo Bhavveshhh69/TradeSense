@@ -28,15 +28,68 @@ const mockQuote = {
 
 const mockValidation = {
   symbol: 'RELIANCE.NS',
+  market: 'IN',
+  timeframe: '15m',
   period: {
-    start_date: '2025-04-02',
-    end_date: '2026-04-02',
-    horizon: 5,
+    start_date: '2026-03-01',
+    end_date: '2026-04-15',
+    horizon: 1,
   },
   total_predictions: 104,
   accuracy: 0.6154,
   ece: 0.0732,
   brier_score: 0.2214,
+  trade_metrics: {
+    trade_count: 18,
+    eligible_session_coverage: 0.42,
+    average_r_multiple: 0.16,
+    base_net_expectancy: 0.11,
+    net_expectancy: 0.08,
+    profit_factor: 1.36,
+    win_rate: 0.56,
+    wilson_lower_bound: 0.51,
+    max_drawdown: 1.2,
+  },
+  regime_breakdown: {
+    volatility: {
+      normal: { sessions: 12, trade_count: 8, win_rate: 0.63, net_expectancy: 0.11, profit_factor: 1.4 },
+    },
+    trend: {
+      bullish: { sessions: 9, trade_count: 6, win_rate: 0.67, net_expectancy: 0.13, profit_factor: 1.5 },
+    },
+  },
+  cost_assumptions: {
+    market: 'IN',
+    entry_slippage_bps: 6,
+    exit_slippage_bps: 7,
+    borrow_bps_short_only: 1,
+    round_trip_cost_r: 0.02,
+    stress_cost_multiplier: 1.75,
+    stressed_round_trip_cost_r: 0.035,
+  },
+  sample_quality: {
+    total_sessions: 30,
+    eligible_sessions: 20,
+    traded_sessions: 18,
+    skipped_sessions: 12,
+    survivorship_limited_universe: true,
+    survivorship_note:
+      'Bootstrap universe is liquid but survivorship-limited and should not be treated as survivorship-bias-free.',
+    multiple_testing_search_space: {
+      models_tested: 3,
+      thresholds_tested: 11,
+      policy_variants_tested: 8,
+      total_configurations: 264,
+    },
+    execution_assumption:
+      'Signals are generated on bar t and evaluated with next-bar-open entry. Same-bar fills are not allowed.',
+  },
+  promotion_gate: {
+    passed: true,
+    reason: 'Promotion gate passed.',
+    market: 'IN',
+    artifact_timestamp: '2026-04-15T09:10:00Z',
+  },
   accuracy_by_confidence: {
     '0.50-0.60': 0.55,
     '0.60-0.70': 0.63,
@@ -54,6 +107,8 @@ const mockAnalysis = {
   symbol: 'RELIANCE.NS',
   decision_label: 'Long',
   signal: 'LONG',
+  actionability_state: 'actionable',
+  decision_reason_type: null,
   signal_explanation: 'Long intraday setup detected.',
   confidence_level: 'High confidence',
   probability: 0.67,
@@ -61,11 +116,14 @@ const mockAnalysis = {
   stop_price: 2840,
   take_profit_price: 2945,
   forced_exit_time: '15:15 IST',
+  effective_threshold: 0.55,
+  threshold_gap: 0.12,
   model_name: 'xgboost',
   trend_summary: 'Momentum and breadth remain constructive.',
   risk_summary: 'Risk stays inside the session bracket.',
   model_honesty: 'This is directional quality, not proof of profitability.',
   sentiment_gate_reason: 'Company and sector news are supportive.',
+  promotion_gate: { passed: true, reason: 'Promotion gate passed.' },
 }
 
 const fetchCommandCenter = vi.fn()
@@ -344,9 +402,12 @@ describe('TradeSense active trader shell', () => {
     fireEvent.click((await screen.findAllByRole('button', { name: 'Lock Reliance' }))[0])
 
     expect((await screen.findAllByText('Reliance Industries')).length).toBeGreaterThan(0)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Analyze' })).toBeEnabled())
+    await waitFor(() => {
+      const runAnalysisButtons = screen.getAllByRole('button', { name: 'Run analysis' })
+      expect(runAnalysisButtons[0]).toBeEnabled()
+    })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Analyze' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Run analysis' })[0])
 
     expect(await screen.findByRole('heading', { name: 'Long' })).toBeInTheDocument()
     expect(screen.getByText('This is directional quality, not proof of profitability.')).toBeInTheDocument()
@@ -355,8 +416,9 @@ describe('TradeSense active trader shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Run validation' }))
 
     expect(await screen.findByText('Empirical check')).toBeInTheDocument()
-    expect(screen.getByText('Accuracy')).toBeInTheDocument()
-    expect(screen.getByText('Brier score')).toBeInTheDocument()
+    expect(screen.getByText('Trade count')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Promotion gate' })).toBeInTheDocument()
+    expect(screen.getByText('Profit factor')).toBeInTheDocument()
     expect(screen.getByText('0.2214')).toBeInTheDocument()
   })
 

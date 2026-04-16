@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +12,9 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from xgboost import XGBClassifier
 
+from tradesense.backtesting.metrics import compute_backtest_metrics
+from tradesense.backtesting.reliability import compute_reliability_curve
+
 from .market import DEFAULT_TIMEFRAME_MIN, STRATEGY_FAMILY, get_market_profile, resolve_market
 from .provider import YahooIntradayProvider
 from .quality import DataQualityValidator
@@ -20,7 +23,7 @@ from .strategy import FEATURE_COLUMNS, ORBSessionVWAPStrategy
 
 
 MODEL_DIR = Path(__file__).resolve().parents[1] / "models"
-MODEL_SCHEMA_VERSION = 4
+MODEL_SCHEMA_VERSION = 5
 LOOKBACK_DAYS = 90
 US_BOOTSTRAP_SYMBOLS = ("AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "AMD", "NFLX", "JPM", "TSLA")
 IN_BOOTSTRAP_SYMBOLS = ("RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "KOTAKBANK.NS", "HCLTECH.NS", "WIPRO.NS", "LT.NS")
@@ -30,6 +33,9 @@ MIN_TRADE_COUNT_FLOOR = 12
 MIN_ELIGIBLE_SESSION_COVERAGE = 0.30
 MIN_PROFIT_FACTOR = 1.1
 MIN_WIN_RATE_LOWER_BOUND = 0.5
+MIN_THRESHOLD_TRADE_COUNT = 4
+MIN_THRESHOLD_SESSION_COVERAGE = 0.20
+THRESHOLD_GRID = tuple(float(round(value, 2)) for value in np.linspace(0.5, 0.75, 11))
 EXECUTION_BPS = {
     "US": {"entry": 4.0, "exit": 5.0, "borrow": 1.0},
     "IN": {"entry": 6.0, "exit": 7.0, "borrow": 1.0},
@@ -56,6 +62,7 @@ class ModelArtifact:
     model_type: str
     metadata: dict[str, Any]
     model_bench_summary: dict[str, Any]
+    promotion_gate: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -97,6 +104,11 @@ class ModelRegistry:
                     model_type=str(payload.get("model_type", payload.get("model_name", "heuristic"))),
                     metadata=metadata,
                     model_bench_summary=dict(payload.get("model_bench_summary", {})),
+                    promotion_gate=self._resolve_promotion_gate(
+                        market=market,
+                        artifact_timestamp=metadata.get("trained_at"),
+                        payload=payload,
+                    ),
                 )
         artifact = self._train_market(market, timeframe_min=timeframe_min)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -110,6 +122,7 @@ class ModelRegistry:
                 "model_type": artifact.model_type,
                 "metadata": artifact.metadata,
                 "model_bench_summary": artifact.model_bench_summary,
+                "promotion_gate": artifact.promotion_gate,
             },
             path,
         )
@@ -208,23 +221,13 @@ class ModelRegistry:
 
         live_candidate = self.load_or_train(market, timeframe_min=timeframe_min)
         live_report = model_reports.get(live_candidate.model_name, {})
-        live_with_sentiment = live_report.get("with_sentiment", {})
-        passed = bool(
-            live_with_sentiment
-            and live_with_sentiment.get("net_expectancy", 0.0) > 0
-            and live_with_sentiment.get("profit_factor", 0.0) >= MIN_PROFIT_FACTOR
-            and live_with_sentiment.get("trade_count", 0) >= MIN_TRADE_COUNT_FLOOR
-            and live_with_sentiment.get("eligible_session_coverage", 0.0) >= MIN_ELIGIBLE_SESSION_COVERAGE
-            and live_with_sentiment.get("win_rate_lower_bound", 0.0) >= MIN_WIN_RATE_LOWER_BOUND
-        )
         return {
             "market": market,
             "timeframe": f"{timeframe_min}m",
             "models": model_reports,
             "promotion_gate": {
-                "passed": passed,
+                **live_candidate.promotion_gate,
                 "model_name": live_candidate.model_name,
-                "reason": "Promotion gate passed." if passed else "Live model did not clear expectancy, profit factor, trade-count, coverage, or confidence floors.",
             },
         }
 
@@ -245,6 +248,12 @@ class ModelRegistry:
                     "reason": "insufficient_intraday_dataset",
                 },
                 model_bench_summary={},
+                promotion_gate=self._promotion_gate(
+                    {},
+                    market=market,
+                    artifact_timestamp=datetime.now(tz=UTC).isoformat(),
+                    reason_override="Promotion blocked because no sufficient intraday training dataset was available.",
+                ),
             )
 
         sessions = sorted(dataset["session_date"].unique())
@@ -268,6 +277,12 @@ class ModelRegistry:
                     "reason": "insufficient_walk_forward_sessions",
                 },
                 model_bench_summary={},
+                promotion_gate=self._promotion_gate(
+                    {},
+                    market=market,
+                    artifact_timestamp=datetime.now(tz=UTC).isoformat(),
+                    reason_override="Promotion blocked because the walk-forward split did not have enough sessions.",
+                ),
             )
 
         candidates = self._fit_candidates(dataset, train_sessions, val_sessions, test_sessions)
@@ -286,10 +301,17 @@ class ModelRegistry:
                     "reason": "candidate_training_failed",
                 },
                 model_bench_summary={},
+                promotion_gate=self._promotion_gate(
+                    {},
+                    market=market,
+                    artifact_timestamp=datetime.now(tz=UTC).isoformat(),
+                    reason_override="Promotion blocked because no trained candidate cleared the minimum training requirements.",
+                ),
             )
 
         best_name = max(candidates, key=lambda name: (self._candidate_score(candidates[name]), 1 if name == "xgboost" else 0))
         best_candidate = candidates[best_name]
+        trained_at = datetime.now(tz=UTC).isoformat()
         bench_summary = {
             model_name: {
                 "validation": bundle.validation_summary,
@@ -298,6 +320,12 @@ class ModelRegistry:
             }
             for model_name, bundle in candidates.items()
         }
+        search_space = self._search_space_summary()
+        promotion_gate = self._promotion_gate(
+            best_candidate.holdout_summary,
+            market=market,
+            artifact_timestamp=trained_at,
+        )
         return ModelArtifact(
             model=best_candidate.model,
             calibrator=best_candidate.calibrator,
@@ -307,14 +335,16 @@ class ModelRegistry:
             model_type=best_name,
             metadata={
                 "market": market,
-                "trained_at": datetime.now(tz=UTC).isoformat(),
+                "trained_at": trained_at,
                 "registry_version": MODEL_SCHEMA_VERSION,
                 "validation_expectancy": best_candidate.validation_summary["net_expectancy"],
                 "validation_rows": int(sum(dataset["session_date"].isin(val_sessions))),
                 "holdout_expectancy": best_candidate.holdout_summary["net_expectancy"],
                 "selected_policy": best_candidate.validation_summary.get("selected_policy"),
+                "search_space": search_space,
             },
             model_bench_summary=bench_summary,
+            promotion_gate=promotion_gate,
         )
 
     def _fit_candidates(
@@ -396,14 +426,28 @@ class ModelRegistry:
     def _best_threshold(self, probabilities: np.ndarray, r_values: np.ndarray) -> tuple[float, float]:
         best_threshold = 0.55
         best_expectancy = -999.0
-        for threshold in np.linspace(0.5, 0.75, 11):
+        best_score = (-999.0, -999.0, -999.0, -999.0)
+        total_rows = max(len(probabilities), 1)
+        for threshold in THRESHOLD_GRID:
             mask = probabilities >= threshold
-            if mask.sum() < 3:
+            trade_count = int(mask.sum())
+            coverage = float(trade_count / total_rows)
+            if trade_count < MIN_THRESHOLD_TRADE_COUNT or coverage < MIN_THRESHOLD_SESSION_COVERAGE:
                 continue
-            expectancy = float(np.mean(r_values[mask] - ROUND_TRIP_COST_R))
-            if expectancy > best_expectancy:
+            expectancy = float(np.mean(r_values[mask] - (ROUND_TRIP_COST_R * STRESS_COST_MULTIPLIER)))
+            gross_wins = float(r_values[mask][r_values[mask] > 0].sum())
+            gross_losses = float(abs(r_values[mask][r_values[mask] < 0].sum()))
+            profit_factor = gross_wins / gross_losses if gross_losses else gross_wins
+            score = (
+                expectancy,
+                float(profit_factor),
+                float(self._wilson_lower_bound(int((r_values[mask] > 0).sum()), trade_count)),
+                float(trade_count),
+            )
+            if score > best_score:
+                best_score = score
                 best_expectancy = expectancy
-                best_threshold = float(round(threshold, 2))
+                best_threshold = float(threshold)
         return best_threshold, best_expectancy if best_expectancy > -999.0 else 0.0
 
     def _build_training_dataset(self, market: str, timeframe_min: int) -> pd.DataFrame | None:
@@ -523,11 +567,11 @@ class ModelRegistry:
         holdout = bundle.holdout_summary
         validation = bundle.validation_summary
         return (
+            1.0 if self._passes_promotion_gate(holdout) else 0.0,
             float(holdout.get("win_rate_lower_bound", 0.0)),
             float(holdout.get("net_expectancy", 0.0)),
             float(holdout.get("profit_factor", 0.0)),
-            float(validation.get("win_rate_lower_bound", 0.0)),
-            float(validation.get("net_expectancy", 0.0)),
+            float(validation.get("net_expectancy", 0.0)) - (0.0025 * float(validation.get("complexity", 0.0))),
         )
 
     def _trade_metrics(self, frame: pd.DataFrame, *, policy: dict[str, Any]) -> dict[str, Any]:
@@ -539,6 +583,8 @@ class ModelRegistry:
                 "trade_count": 0,
                 "eligible_session_coverage": 0.0,
                 "average_r_multiple": 0.0,
+                "base_net_expectancy": 0.0,
+                "stress_net_expectancy": 0.0,
                 "net_expectancy": 0.0,
                 "profit_factor": 0.0,
                 "win_rate_lower_bound": 0.0,
@@ -592,6 +638,8 @@ class ModelRegistry:
                 "trade_count": 0,
                 "eligible_session_coverage": 0.0,
                 "average_r_multiple": 0.0,
+                "base_net_expectancy": 0.0,
+                "stress_net_expectancy": 0.0,
                 "net_expectancy": 0.0,
                 "profit_factor": 0.0,
                 "win_rate_lower_bound": 0.0,
@@ -606,6 +654,7 @@ class ModelRegistry:
                 "complexity": complexity,
             }
 
+        base_net_r = traded["r_multiple"] - ROUND_TRIP_COST_R
         net_r = traded["r_multiple"] - (ROUND_TRIP_COST_R * STRESS_COST_MULTIPLIER)
         gross_wins = traded.loc[traded["r_multiple"] > 0, "r_multiple"].sum()
         gross_losses = abs(traded.loc[traded["r_multiple"] < 0, "r_multiple"].sum())
@@ -621,6 +670,8 @@ class ModelRegistry:
             "trade_count": trade_count,
             "eligible_session_coverage": round(float(traded["session_date"].nunique() / total_sessions), 4),
             "average_r_multiple": round(float(traded["r_multiple"].mean()), 4),
+            "base_net_expectancy": round(float(base_net_r.mean()), 4),
+            "stress_net_expectancy": round(float(net_r.mean()), 4),
             "net_expectancy": round(float(net_r.mean()), 4),
             "profit_factor": round(float(gross_wins / gross_losses) if gross_losses else float(gross_wins), 4),
             "win_rate_lower_bound": round(self._wilson_lower_bound(win_count, trade_count), 4),
@@ -633,6 +684,121 @@ class ModelRegistry:
                 "below_threshold": int((~eval_frame["traded"]).sum()),
             },
             "complexity": complexity,
+        }
+
+    def validate_symbol_intraday(
+        self,
+        symbol: str,
+        *,
+        timeframe_min: int = DEFAULT_TIMEFRAME_MIN,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> dict[str, Any]:
+        profile = get_market_profile(symbol, timeframe_min=timeframe_min)
+        lookback_days = self._validation_lookback_days(start_date, end_date)
+        request = type(
+            "Req",
+            (),
+            {
+                "symbol": symbol,
+                "market": profile.market,
+                "exchange": profile.exchange,
+                "timezone": profile.timezone,
+                "currency": profile.currency,
+                "timeframe_min": timeframe_min,
+                "lookback_days": lookback_days,
+                "source": "yfinance",
+            },
+        )()
+        bars = self.provider.fetch_bars(request)
+        quality = self.validator.validate(bars, profile, timeframe_min)
+        context = self.strategy.build_context(symbol, bars, profile, quality)
+        dataset = pd.DataFrame(self._extract_proposals(context.feature_frame, symbol, profile))
+        dataset = self._filter_validation_dataset(dataset, start_date, end_date)
+        artifact = self.load_or_train(profile.market, timeframe_min=timeframe_min)
+        policy = self._selected_policy(artifact)
+        period = self._validation_period(dataset, start_date, end_date)
+        total_sessions = int(context.feature_frame["session_date"].nunique()) if not context.feature_frame.empty else 0
+
+        if dataset.empty:
+            return {
+                "symbol": symbol,
+                "market": profile.market,
+                "timeframe": f"{timeframe_min}m",
+                "period": period,
+                "total_predictions": 0,
+                "accuracy": 0.0,
+                "ece": 0.0,
+                "brier_score": 0.0,
+                "accuracy_by_confidence": {},
+                "reliability_curve": [],
+                "trade_metrics": self._empty_trade_metrics(),
+                "regime_breakdown": {"volatility": {}, "trend": {}},
+                "cost_assumptions": self._cost_assumptions(profile.market),
+                "sample_quality": {
+                    "total_sessions": total_sessions,
+                    "eligible_sessions": 0,
+                    "traded_sessions": 0,
+                    "skipped_sessions": total_sessions,
+                    "survivorship_limited_universe": True,
+                    "survivorship_note": "Bootstrap universe is liquid but survivorship-limited and should not be treated as survivorship-bias-free.",
+                    "multiple_testing_search_space": self._search_space_summary(),
+                    "execution_assumption": "Signals are generated on bar t and evaluated with next-bar-open entry. Same-bar fills are not allowed.",
+                    "data_quality": quality.to_dict(),
+                },
+                "promotion_gate": artifact.promotion_gate,
+            }
+
+        probabilities = self._predict_probabilities(artifact, dataset)
+        eval_frame = dataset.copy()
+        eval_frame["probability"] = probabilities
+        eval_frame["threshold"] = float(artifact.threshold)
+        trade_metrics = self._trade_metrics(eval_frame, policy=policy)
+        predictions = self._calibration_frame(eval_frame, policy)
+        calibration = compute_backtest_metrics(predictions)
+        reliability = compute_reliability_curve(predictions)["buckets"]
+        trade_mask = self._policy_trade_mask(eval_frame, policy)
+        traded_sessions = int(eval_frame.loc[trade_mask, "session_date"].nunique())
+
+        return {
+            "symbol": symbol,
+            "market": profile.market,
+            "timeframe": f"{timeframe_min}m",
+            "period": period,
+            "total_predictions": int(len(eval_frame)),
+            "accuracy": round(float(calibration.overall_accuracy), 4),
+            "ece": round(float(calibration.expected_calibration_error), 4),
+            "brier_score": round(float(calibration.brier_score), 4),
+            "accuracy_by_confidence": {
+                bucket: round(float(score), 4)
+                for bucket, score in calibration.accuracy_by_confidence_level.items()
+            },
+            "reliability_curve": reliability,
+            "trade_metrics": {
+                "trade_count": int(trade_metrics.get("trade_count", 0)),
+                "eligible_session_coverage": float(trade_metrics.get("eligible_session_coverage", 0.0)),
+                "average_r_multiple": float(trade_metrics.get("average_r_multiple", 0.0)),
+                "base_net_expectancy": float(trade_metrics.get("base_net_expectancy", 0.0)),
+                "net_expectancy": float(trade_metrics.get("net_expectancy", 0.0)),
+                "profit_factor": float(trade_metrics.get("profit_factor", 0.0)),
+                "win_rate": float(trade_metrics.get("win_rate", 0.0)),
+                "wilson_lower_bound": float(trade_metrics.get("win_rate_lower_bound", 0.0)),
+                "max_drawdown": float(trade_metrics.get("max_drawdown", 0.0)),
+            },
+            "regime_breakdown": self._regime_breakdown(eval_frame, policy),
+            "cost_assumptions": self._cost_assumptions(profile.market),
+            "sample_quality": {
+                "total_sessions": total_sessions,
+                "eligible_sessions": int(eval_frame["session_date"].nunique()),
+                "traded_sessions": traded_sessions,
+                "skipped_sessions": max(total_sessions - traded_sessions, 0),
+                "survivorship_limited_universe": True,
+                "survivorship_note": "Bootstrap universe is liquid but survivorship-limited and should not be treated as survivorship-bias-free.",
+                "multiple_testing_search_space": self._search_space_summary(),
+                "execution_assumption": "Signals are generated on bar t and evaluated with next-bar-open entry. Same-bar fills are not allowed.",
+                "data_quality": quality.to_dict(),
+            },
+            "promotion_gate": artifact.promotion_gate,
         }
 
     def _label_trade(
@@ -691,3 +857,265 @@ class ModelRegistry:
         centre = phat + (z * z) / (2 * total)
         margin = z * np.sqrt((phat * (1 - phat) / total) + (z * z) / (4 * total * total))
         return float((centre - margin) / denominator)
+
+    def _passes_promotion_gate(self, summary: dict[str, Any]) -> bool:
+        return bool(
+            summary
+            and float(summary.get("net_expectancy", 0.0)) > 0.0
+            and float(summary.get("profit_factor", 0.0)) >= MIN_PROFIT_FACTOR
+            and int(summary.get("trade_count", 0)) >= MIN_TRADE_COUNT_FLOOR
+            and float(summary.get("eligible_session_coverage", 0.0)) >= MIN_ELIGIBLE_SESSION_COVERAGE
+            and float(summary.get("win_rate_lower_bound", 0.0)) >= MIN_WIN_RATE_LOWER_BOUND
+        )
+
+    def _promotion_gate(
+        self,
+        summary: dict[str, Any],
+        *,
+        market: str,
+        artifact_timestamp: str | None,
+        reason_override: str | None = None,
+    ) -> dict[str, Any]:
+        if reason_override:
+            return {
+                "passed": False,
+                "reason": reason_override,
+                "market": market,
+                "artifact_timestamp": artifact_timestamp,
+            }
+
+        blockers: list[str] = []
+        if float(summary.get("net_expectancy", 0.0)) <= 0.0:
+            blockers.append("holdout net expectancy is not positive")
+        if float(summary.get("profit_factor", 0.0)) < MIN_PROFIT_FACTOR:
+            blockers.append(f"profit factor is below {MIN_PROFIT_FACTOR:.2f}")
+        if int(summary.get("trade_count", 0)) < MIN_TRADE_COUNT_FLOOR:
+            blockers.append(f"holdout trade count is below {MIN_TRADE_COUNT_FLOOR}")
+        if float(summary.get("eligible_session_coverage", 0.0)) < MIN_ELIGIBLE_SESSION_COVERAGE:
+            blockers.append(f"eligible-session coverage is below {MIN_ELIGIBLE_SESSION_COVERAGE:.2f}")
+        if float(summary.get("win_rate_lower_bound", 0.0)) < MIN_WIN_RATE_LOWER_BOUND:
+            blockers.append(f"Wilson lower bound is below {MIN_WIN_RATE_LOWER_BOUND:.2f}")
+
+        passed = not blockers
+        return {
+            "passed": passed,
+            "reason": "Promotion gate passed." if passed else f"Promotion blocked because {', '.join(blockers)}.",
+            "market": market,
+            "artifact_timestamp": artifact_timestamp,
+        }
+
+    def _resolve_promotion_gate(
+        self,
+        *,
+        market: str,
+        artifact_timestamp: str | None,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        existing = payload.get("promotion_gate")
+        if isinstance(existing, dict):
+            return {
+                "passed": bool(existing.get("passed", False)),
+                "reason": str(existing.get("reason", "Promotion gate metadata missing.")),
+                "market": str(existing.get("market", market)),
+                "artifact_timestamp": existing.get("artifact_timestamp", artifact_timestamp),
+            }
+        model_name = str(payload.get("model_name", payload.get("model_type", "heuristic")))
+        bench_summary = dict(payload.get("model_bench_summary", {}))
+        holdout_summary = dict(bench_summary.get(model_name, {}).get("holdout", {}))
+        return self._promotion_gate(holdout_summary, market=market, artifact_timestamp=artifact_timestamp)
+
+    def _search_space_summary(self) -> dict[str, int]:
+        model_count = 3
+        threshold_count = len(THRESHOLD_GRID)
+        policy_count = len(POLICY_GRID)
+        return {
+            "models_tested": model_count,
+            "thresholds_tested": threshold_count,
+            "policy_variants_tested": policy_count,
+            "total_configurations": model_count * threshold_count * policy_count,
+        }
+
+    def _selected_policy(self, artifact: ModelArtifact) -> dict[str, Any]:
+        policy = artifact.metadata.get("selected_policy")
+        return dict(policy) if isinstance(policy, dict) else dict(POLICY_GRID[0])
+
+    def _validation_lookback_days(self, start_date: str | None, end_date: str | None) -> int:
+        if not start_date and not end_date:
+            return 45
+        start = pd.to_datetime(start_date).date() if start_date else None
+        end = pd.to_datetime(end_date).date() if end_date else datetime.now(tz=UTC).date()
+        if start is None:
+            return 45
+        return max(5, min((end - start).days + 5, 59))
+
+    def _filter_validation_dataset(self, dataset: pd.DataFrame, start_date: str | None, end_date: str | None) -> pd.DataFrame:
+        if dataset.empty:
+            return dataset
+        filtered = dataset.copy()
+        if start_date:
+            start = pd.to_datetime(start_date).date()
+            filtered = filtered.loc[filtered["session_date"] >= start]
+        if end_date:
+            end = pd.to_datetime(end_date).date()
+            filtered = filtered.loc[filtered["session_date"] <= end]
+        return filtered.reset_index(drop=True)
+
+    def _validation_period(self, dataset: pd.DataFrame, start_date: str | None, end_date: str | None) -> dict[str, Any]:
+        if not dataset.empty:
+            return {
+                "start_date": str(dataset["session_date"].min()),
+                "end_date": str(dataset["session_date"].max()),
+                "horizon": 1,
+            }
+        today = datetime.now(tz=UTC).date()
+        fallback_start = pd.to_datetime(start_date).date() if start_date else today - timedelta(days=45)
+        fallback_end = pd.to_datetime(end_date).date() if end_date else today
+        return {
+            "start_date": str(fallback_start),
+            "end_date": str(fallback_end),
+            "horizon": 1,
+        }
+
+    def _predict_probabilities(self, artifact: ModelArtifact, dataset: pd.DataFrame) -> np.ndarray:
+        X = dataset.loc[:, list(artifact.feature_names)].fillna(0.0)
+        if artifact.model is None:
+            return np.array(
+                [
+                    self.predict_probability(artifact, pd.DataFrame([row]))
+                    for row in X.to_dict(orient="records")
+                ],
+                dtype=float,
+            )
+        raw = artifact.model.predict_proba(X)[:, 1]
+        return self._apply_calibrator(artifact.calibrator, raw)
+
+    def _confidence_bucket(self, probability: float, effective_threshold: float) -> str:
+        distance = abs(float(probability) - float(effective_threshold))
+        if distance >= 0.2:
+            return "strong"
+        if distance >= 0.1:
+            return "high"
+        if distance >= 0.05:
+            return "moderate"
+        return "low"
+
+    def _calibration_frame(self, eval_frame: pd.DataFrame, policy: dict[str, Any]) -> pd.DataFrame:
+        thresholds: list[float] = []
+        confidence_levels: list[str] = []
+        for row in eval_frame.itertuples(index=False):
+            threshold = float(row.threshold) + float(policy.get("threshold_delta", 0.0))
+            if bool(policy.get("use_sentiment_gate", False)):
+                threshold, _ = self.sentiment_engine.gate_threshold(
+                    threshold,
+                    str(row.setup_side),
+                    type(
+                        "Snapshot",
+                        (),
+                        {
+                            "contextual_sentiment_score": float(row.contextual_sentiment_score),
+                            "sentiment_confidence": float(row.sentiment_confidence),
+                        },
+                    )(),
+                )
+            thresholds.append(float(threshold))
+            confidence_levels.append(self._confidence_bucket(float(row.probability), float(threshold)))
+
+        predictions = pd.DataFrame(
+            {
+                "probability_calibrated": eval_frame["probability"].astype(float),
+                "actual_outcome": eval_frame["target"].astype(int),
+                "confidence_level": confidence_levels,
+                "effective_threshold": thresholds,
+            }
+        )
+        return predictions
+
+    def _policy_trade_mask(self, eval_frame: pd.DataFrame, policy: dict[str, Any]) -> pd.Series:
+        traded_mask: list[bool] = []
+        for row in eval_frame.itertuples(index=False):
+            threshold = float(row.threshold) + float(policy.get("threshold_delta", 0.0))
+            if bool(policy.get("use_sentiment_gate", False)):
+                threshold, _ = self.sentiment_engine.gate_threshold(
+                    threshold,
+                    str(row.setup_side),
+                    type(
+                        "Snapshot",
+                        (),
+                        {
+                            "contextual_sentiment_score": float(row.contextual_sentiment_score),
+                            "sentiment_confidence": float(row.sentiment_confidence),
+                        },
+                    )(),
+                )
+            passes_filters = (
+                abs(float(row.breakout_strength)) >= float(policy.get("min_breakout_strength", 0.0))
+                and float(row.relative_volume) >= float(policy.get("min_relative_volume", 0.0))
+                and float(row.body_wick_imbalance) >= float(policy.get("min_body_wick", 0.0))
+                and float(row.range_expansion) <= float(policy.get("max_range_expansion", 99.0))
+                and abs(float(row.vwap_distance)) >= float(policy.get("min_abs_vwap_distance", 0.0))
+                and float(row.session_progress) <= float(policy.get("max_session_progress", 1.0))
+            )
+            traded_mask.append(passes_filters and float(row.probability) >= threshold)
+        return pd.Series(traded_mask, index=eval_frame.index, dtype=bool)
+
+    def _cost_assumptions(self, market: str) -> dict[str, Any]:
+        return {
+            "market": market,
+            "entry_slippage_bps": EXECUTION_BPS[market]["entry"],
+            "exit_slippage_bps": EXECUTION_BPS[market]["exit"],
+            "borrow_bps_short_only": EXECUTION_BPS[market]["borrow"],
+            "round_trip_cost_r": ROUND_TRIP_COST_R,
+            "stress_cost_multiplier": STRESS_COST_MULTIPLIER,
+            "stressed_round_trip_cost_r": round(ROUND_TRIP_COST_R * STRESS_COST_MULTIPLIER, 4),
+        }
+
+    def _regime_breakdown(self, eval_frame: pd.DataFrame, policy: dict[str, Any]) -> dict[str, Any]:
+        if eval_frame.empty:
+            return {"volatility": {}, "trend": {}}
+
+        working = eval_frame.copy()
+        working["volatility_regime"] = np.where(
+            working["range_expansion"] >= 1.4,
+            "high_volatility",
+            np.where(working["range_expansion"] <= 0.8, "compressed", "normal"),
+        )
+        working["trend_regime"] = np.where(
+            (working["vwap_distance"] > 0) & (working["continuation_2"] > 0),
+            "bullish",
+            np.where(
+                (working["vwap_distance"] < 0) & (working["continuation_2"] < 0),
+                "bearish",
+                "mixed",
+            ),
+        )
+
+        return {
+            "volatility": self._regime_summary_map(working, "volatility_regime", policy),
+            "trend": self._regime_summary_map(working, "trend_regime", policy),
+        }
+
+    def _regime_summary_map(self, frame: pd.DataFrame, column: str, policy: dict[str, Any]) -> dict[str, Any]:
+        summaries: dict[str, Any] = {}
+        for regime, subset in frame.groupby(column):
+            summary = self._trade_metrics(subset, policy=policy)
+            summaries[str(regime)] = {
+                "sessions": int(subset["session_date"].nunique()),
+                "trade_count": int(summary.get("trade_count", 0)),
+                "win_rate": float(summary.get("win_rate", 0.0)),
+                "net_expectancy": float(summary.get("net_expectancy", 0.0)),
+                "profit_factor": float(summary.get("profit_factor", 0.0)),
+            }
+        return summaries
+
+    def _empty_trade_metrics(self) -> dict[str, Any]:
+        return {
+            "trade_count": 0,
+            "eligible_session_coverage": 0.0,
+            "average_r_multiple": 0.0,
+            "base_net_expectancy": 0.0,
+            "net_expectancy": 0.0,
+            "profit_factor": 0.0,
+            "win_rate": 0.0,
+            "wilson_lower_bound": 0.0,
+            "max_drawdown": 0.0,
+        }

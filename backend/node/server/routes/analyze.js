@@ -56,6 +56,10 @@ function buildRecentAnalysisEntry(analysis, instrument) {
     risk_summary: analysis.risk_summary,
     signal_explanation: analysis.signal_explanation,
     trade_actionable: analysis.trade_actionable,
+    actionability_state: analysis.actionability_state,
+    decision_reason_type: analysis.decision_reason_type,
+    no_trade_reason: analysis.no_trade_reason,
+    promotion_gate: analysis.promotion_gate,
     recorded_at: new Date().toISOString(),
   };
 }
@@ -86,6 +90,12 @@ function mapAnalyzeResponse(instrument, predictionData, latestPrice) {
     typeof predictionData?.summary === 'string'
       ? predictionData.summary
       : 'No intraday summary was returned by the Python engine.';
+  const actionabilityState =
+    typeof predictionData?.actionability_state === 'string'
+      ? predictionData.actionability_state
+      : decision === 'LONG' || decision === 'SHORT'
+        ? 'actionable'
+        : 'blocked';
 
   return {
     ...predictionData,
@@ -110,7 +120,12 @@ function mapAnalyzeResponse(instrument, predictionData, latestPrice) {
       typeof predictionData?.confidence_level === 'string' ? predictionData.confidence_level : null,
     confidence_level: confidenceLevel,
     setup_side: setupSide,
-    trade_actionable: decision === 'LONG' || decision === 'SHORT',
+    trade_actionable: actionabilityState === 'actionable',
+    actionability_state: actionabilityState,
+    decision_reason_type:
+      typeof predictionData?.decision_reason_type === 'string'
+        ? predictionData.decision_reason_type
+        : null,
     signal_explanation: summary,
   };
 }

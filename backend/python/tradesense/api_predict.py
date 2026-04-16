@@ -9,7 +9,6 @@ from typing import Any
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError, field_validator
 
-from tradesense.backtesting.backtest_engine import run_backtest
 from tradesense.intraday.engine import ENGINE
 from tradesense.intraday.market import DEFAULT_TIMEFRAME_MIN, get_market_profile
 from tradesense.intraday.provider import latest_regular_close
@@ -45,6 +44,8 @@ class PredictResponse(BaseModel):
     probability: float
     confidence: float
     decision: str
+    decision_reason_type: str | None = None
+    actionability_state: str
     confidence_level: str
     strength: float
     context: dict[str, Any]
@@ -60,6 +61,7 @@ class PredictResponse(BaseModel):
     take_profit_price: float | None = None
     forced_exit_time: str | None = None
     no_trade_reason: str | None = None
+    promotion_gate: dict[str, Any]
     data_quality: dict[str, Any]
     summary: str
     market_context: dict[str, Any]
@@ -69,6 +71,10 @@ class PredictResponse(BaseModel):
     current_price: float | None = None
     trade_window: dict[str, Any] | None = None
     threshold: float | None = None
+    base_threshold: float | None = None
+    effective_threshold: float | None = None
+    threshold_adjustment_reason: str | None = None
+    threshold_gap: float | None = None
     stock_sentiment_score: float
     sector_sentiment_score: float | None = None
     contextual_sentiment_score: float
@@ -144,6 +150,8 @@ class ValidationResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     symbol: str
+    market: str
+    timeframe: str
     period: ValidationPeriod
     total_predictions: int = Field(..., ge=0)
     accuracy: float = Field(..., ge=0.0, le=1.0)
@@ -151,6 +159,11 @@ class ValidationResponse(BaseModel):
     brier_score: float = Field(..., ge=0.0)
     accuracy_by_confidence: dict[str, float]
     reliability_curve: list[ValidationReliabilityPoint]
+    trade_metrics: dict[str, Any]
+    regime_breakdown: dict[str, Any]
+    cost_assumptions: dict[str, Any]
+    sample_quality: dict[str, Any]
+    promotion_gate: dict[str, Any]
 
 
 def _validated_symbol(symbol: str) -> str:
@@ -182,8 +195,8 @@ def _fetch_bars(symbol: str, days: int) -> tuple[list, Any]:
 
 def _default_validation_window() -> tuple[str, str]:
     today = datetime.now(tz=UTC).date()
-    start = today - timedelta(days=365)
-    end = today - timedelta(days=14)
+    start = today - timedelta(days=45)
+    end = today
     return start.isoformat(), end.isoformat()
 
 
@@ -281,34 +294,36 @@ def validate_analysis(payload: dict = Body(...)):
         end_date = request.end_date
 
     try:
-        _, result = run_backtest(
+        result = ENGINE.validate_symbol(
             symbol=request.symbol,
             start_date=start_date,
             end_date=end_date,
-            interval=request.interval,
-            horizon=request.horizon,
+            timeframe_min=DEFAULT_TIMEFRAME_MIN,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         logger.exception("Validation failed for %s", request.symbol)
         raise HTTPException(status_code=500, detail="Validation failure") from exc
 
-    metrics = result.metrics.model_dump()
-    reliability_curve = [bucket.model_dump() for bucket in result.reliability]
     return ValidationResponse(
-        symbol=result.symbol,
+        symbol=result["symbol"],
+        market=result["market"],
+        timeframe=result["timeframe"],
         period=ValidationPeriod(
-            start_date=result.start_date,
-            end_date=result.end_date,
-            horizon=result.horizon,
+            start_date=result["period"]["start_date"],
+            end_date=result["period"]["end_date"],
+            horizon=result["period"]["horizon"],
         ),
-        total_predictions=result.total_predictions,
-        accuracy=float(metrics["overall_accuracy"]),
-        ece=float(metrics["expected_calibration_error"]),
-        brier_score=float(metrics["brier_score"]),
-        accuracy_by_confidence=metrics["accuracy_by_confidence_level"],
+        total_predictions=result["total_predictions"],
+        accuracy=float(result["accuracy"]),
+        ece=float(result["ece"]),
+        brier_score=float(result["brier_score"]),
+        accuracy_by_confidence=result["accuracy_by_confidence"],
         reliability_curve=[
-            ValidationReliabilityPoint(**bucket) for bucket in reliability_curve
+            ValidationReliabilityPoint(**bucket) for bucket in result["reliability_curve"]
         ],
+        trade_metrics=result["trade_metrics"],
+        regime_breakdown=result["regime_breakdown"],
+        cost_assumptions=result["cost_assumptions"],
+        sample_quality=result["sample_quality"],
+        promotion_gate=result["promotion_gate"],
     )

@@ -133,6 +133,8 @@ class StrategyContext:
 @dataclass(frozen=True)
 class NoTrade:
     reason: str
+    decision: str = "NO_TRADE"
+    reason_type: str = "hard_blocker"
     details: tuple[str, ...] = ()
 
 

@@ -112,6 +112,20 @@ function normalizeRecentEntry(raw) {
         ? raw.signal_explanation.trim()
         : null,
     trade_actionable: raw.trade_actionable === true,
+    actionability_state:
+      typeof raw.actionability_state === 'string' && raw.actionability_state.trim()
+        ? raw.actionability_state.trim()
+        : raw.trade_actionable === true
+          ? 'actionable'
+          : null,
+    decision_reason_type:
+      typeof raw.decision_reason_type === 'string' && raw.decision_reason_type.trim()
+        ? raw.decision_reason_type.trim()
+        : null,
+    no_trade_reason:
+      typeof raw.no_trade_reason === 'string' && raw.no_trade_reason.trim()
+        ? raw.no_trade_reason.trim()
+        : null,
     recorded_at: recordedAt,
   };
 }

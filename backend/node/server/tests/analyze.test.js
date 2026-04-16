@@ -38,6 +38,8 @@ function mockPredictPayload(overrides = {}) {
     probability: 0.6384,
     confidence: 0.0884,
     decision: 'LONG',
+    decision_reason_type: null,
+    actionability_state: 'actionable',
     confidence_level: 'moderate',
     strength: 0.0884,
     context: {
@@ -62,6 +64,12 @@ function mockPredictPayload(overrides = {}) {
     take_profit_price: 196.5,
     forced_exit_time: '2026-04-15T19:45:00+00:00',
     no_trade_reason: null,
+    promotion_gate: {
+      passed: true,
+      reason: 'Promotion gate passed.',
+      market: 'US',
+      artifact_timestamp: '2026-04-15T14:00:00+00:00',
+    },
     data_quality: {
       missing_bar_count: 0,
       expected_bar_count: 25,
@@ -85,6 +93,10 @@ function mockPredictPayload(overrides = {}) {
     current_price: 194.25,
     trade_window: { start: '10:00', end: '11:00', opening_range_bars: 2 },
     threshold: 0.55,
+    base_threshold: 0.55,
+    effective_threshold: 0.52,
+    threshold_adjustment_reason: 'Supportive sentiment slightly lowered the long-entry threshold.',
+    threshold_gap: 0.1184,
     stock_sentiment_score: 0.31,
     sector_sentiment_score: 0.12,
     contextual_sentiment_score: 0.253,
@@ -156,6 +168,7 @@ test.each([
     decision_label: 'Long',
     signal: 'LONG',
     trade_actionable: true,
+    actionability_state: 'actionable',
     confidence_level: 'Moderate',
     setup_side: 'LONG',
     timeframe: '15m',
@@ -256,6 +269,8 @@ test('POST /api/analyze returns no-trade output without Node-side remapping', as
   axios.post.mockResolvedValue({
     data: mockPredictPayload({
       decision: 'NO_TRADE',
+      decision_reason_type: 'hard_blocker',
+      actionability_state: 'blocked',
       probability: 0,
       confidence_level: 'low',
       setup_side: null,
@@ -277,6 +292,41 @@ test('POST /api/analyze returns no-trade output without Node-side remapping', as
     signal_explanation: 'No intraday trade is being taken.',
     no_trade_reason: 'Price has not broken the opening range',
   });
+});
+
+test('POST /api/analyze preserves watchlist semantics from Python', async () => {
+  symbolsService.normalizeSymbol.mockResolvedValue('AAPL');
+  axios.get.mockResolvedValue({
+    data: {
+      symbol: 'AAPL',
+      market: 'US',
+      timeframe: '15m',
+      price: 193.75,
+    },
+  });
+  axios.post.mockResolvedValue({
+    data: mockPredictPayload({
+      decision: 'WATCHLIST',
+      decision_reason_type: 'threshold_miss',
+      actionability_state: 'monitor',
+      probability: 0.6091,
+      summary: 'Watchlist only for the current US session. The long setup is valid, but the estimated win probability is 61% and remains 1% below the live threshold.',
+      no_trade_reason: 'Model probability did not clear the live expectancy threshold.',
+      threshold_gap: -0.0109,
+    }),
+  });
+
+  const response = await request(app).post('/api/analyze').send({ symbol: 'AAPL' });
+
+  expect(response.status).toBe(200);
+  expect(response.body).toMatchObject({
+    signal: 'WATCHLIST',
+    decision_label: 'Watchlist',
+    trade_actionable: false,
+    actionability_state: 'monitor',
+    decision_reason_type: 'threshold_miss',
+  });
+  expect(response.body.signal_explanation).toContain('Watchlist only');
 });
 
 test('POST /api/analyze returns 400 for invalid input', async () => {
@@ -331,11 +381,18 @@ test('POST /api/analyze/validate returns a flattened validation report', async (
   axios.post.mockResolvedValueOnce({
     data: {
       symbol: 'AAPL',
-      period: { start_date: '2025-04-02', end_date: '2026-04-02', horizon: 5 },
+      market: 'US',
+      timeframe: '15m',
+      period: { start_date: '2026-03-02', end_date: '2026-04-02', horizon: 1 },
       total_predictions: 243,
       accuracy: 0.5185,
       ece: 0.2026,
       brier_score: 0.2917,
+      trade_metrics: { trade_count: 18, net_expectancy: 0.09, profit_factor: 1.33, wilson_lower_bound: 0.51 },
+      regime_breakdown: { volatility: { normal: { sessions: 12, trade_count: 8, net_expectancy: 0.11 } } },
+      cost_assumptions: { stress_cost_multiplier: 1.75, round_trip_cost_r: 0.02, stressed_round_trip_cost_r: 0.035 },
+      sample_quality: { total_sessions: 30, traded_sessions: 18, skipped_sessions: 12 },
+      promotion_gate: { passed: true, reason: 'Promotion gate passed.' },
       accuracy_by_confidence: { low: 0.5, moderate: 0.53 },
       reliability_curve: [{ probability_mean: 0.55, accuracy: 0.5, count: 30 }],
     },
@@ -353,10 +410,12 @@ test('POST /api/analyze/validate returns a flattened validation report', async (
     exchange: 'NASDAQ',
     instrument_type: 'Equity',
     country: 'US',
+    timeframe: '15m',
     total_predictions: 243,
     accuracy: 0.5185,
     ece: 0.2026,
     brier_score: 0.2917,
+    trade_metrics: { trade_count: 18, net_expectancy: 0.09, profit_factor: 1.33, wilson_lower_bound: 0.51 },
   });
   expect(axios.post).toHaveBeenCalledWith(
     'http://localhost:8000/analyze/validate',
