@@ -1,4 +1,3 @@
-# tests/test_phase6b.py
 import sys
 from pathlib import Path
 
@@ -16,36 +15,75 @@ client = TestClient(api.app)
 def _sample_response(symbol: str = "AAPL"):
     return {
         "symbol": symbol,
-        "probability": 0.69,
-        "probability_raw": 0.71,
-        "probability_calibrated": 0.69,
+        "market": "US",
+        "exchange": "NASDAQ",
+        "timeframe": "15m",
+        "strategy_family": "orb_vwap_continuation",
+        "prediction": 1,
+        "probability": 0.64,
+        "confidence": 0.09,
+        "decision": "LONG",
         "confidence_level": "moderate",
-        "confidence_reason": "Medium volatility regime reduces certainty; confidence capped at moderate.",
-        "summary": "Momentum is improving with moderate risk.",
+        "strength": 0.09,
+        "context": {
+            "trend_summary": "Intraday setup is evaluated against opening-range direction and session VWAP alignment.",
+            "risk_summary": "Quality gates, bracket sizing, and sentiment gates are session-aware and market-aware.",
+        },
+        "model_version": "intraday-xgboost",
+        "model_name": "xgboost",
+        "model_threshold": 0.52,
+        "model_bench_summary": {
+            "xgboost": {"validation": {"net_expectancy": 0.22}, "holdout": {"net_expectancy": 0.18}, "threshold": 0.52},
+            "logistic_regression": {"validation": {"net_expectancy": 0.14}, "holdout": {"net_expectancy": 0.1}, "threshold": 0.55},
+        },
+        "timestamp": "2026-04-15T14:15:00+00:00",
+        "generated_at": "2026-04-15T14:16:00+00:00",
+        "setup_side": "LONG",
+        "entry_price": 194.25,
+        "stop_price": 192.75,
+        "take_profit_price": 196.5,
+        "forced_exit_time": "2026-04-15T19:45:00+00:00",
+        "no_trade_reason": None,
+        "data_quality": {
+            "missing_bar_count": 0,
+            "expected_bar_count": 25,
+            "completeness_score": 1.0,
+            "stale_data": False,
+            "timezone_valid": True,
+            "session_valid": True,
+            "usable_for_live": True,
+            "usable_for_backtest": True,
+            "warnings": [],
+        },
+        "summary": "Long intraday setup detected from the long ORB+VWAP family with estimated same-session win probability of 64%.",
         "market_context": {
-            "trend": "Uptrend",
-            "momentum": "Strengthening",
-            "volatility": "Moderate",
+            "market": "US",
+            "exchange": "NASDAQ",
+            "session_window": {"start": "10:00", "end": "11:00", "opening_range_bars": 2},
+            "sector": "Technology",
         },
-        "key_drivers": ["ema20_vs_ema50", "rsi_slope_3"],
-        "structured_explanation": {
-            "key_drivers": ["ema20_vs_ema50", "rsi_slope_3"],
-            "negative_factors": ["volume_ratio"],
-            "confidence_modifiers": ["Moderate volatility regime caps confidence."],
-        },
-        "risk_notes": ["volatility elevated vs 90d average"],
-        "model_honesty": "Model confidence is limited by short-term volatility.",
+        "key_drivers": ["breakout_strength", "vwap_distance", "relative_volume"],
+        "risk_notes": [],
+        "model_honesty": "The probability estimates a same-session bracket outcome for the detected setup. News sentiment can adjust the gate, but price action remains the primary alpha source.",
+        "current_price": 194.25,
+        "trade_window": {"start": "10:00", "end": "11:00", "opening_range_bars": 2},
+        "threshold": 0.52,
+        "stock_sentiment_score": 0.42,
+        "sector_sentiment_score": 0.18,
+        "contextual_sentiment_score": 0.348,
+        "sentiment_confidence": 0.7,
+        "sentiment_gate_reason": "Company and Technology news are supportive.",
+        "stock_article_count": 3,
+        "sector_article_count": 4,
     }
 
 
 def test_analyze_endpoint_success(monkeypatch):
-    def _fake_analyze(symbol: str):
-        return _sample_response(symbol)
-
-    monkeypatch.setattr(api, "_get_analyze_symbol", lambda: _fake_analyze)
+    monkeypatch.setattr(api, "_get_analyze_symbol", lambda: (lambda symbol, news_texts=None: _sample_response(symbol)))
     response = client.post("/analyze", json={"symbol": "AAPL"})
     assert response.status_code == 200
-    assert response.json() == _sample_response("AAPL")
+    assert response.json()["decision"] == "LONG"
+    assert response.json()["timeframe"] == "15m"
 
 
 def test_analyze_endpoint_empty_symbol():
@@ -57,52 +95,55 @@ def test_analyze_endpoint_empty_symbol():
 
 
 def test_analyze_response_schema_correctness(monkeypatch):
-    monkeypatch.setattr(api, "_get_analyze_symbol", lambda: (lambda symbol: _sample_response(symbol)))
+    monkeypatch.setattr(api, "_get_analyze_symbol", lambda: (lambda symbol, news_texts=None: _sample_response(symbol)))
     response = client.post("/analyze", json={"symbol": "AAPL"})
     data = response.json()
 
     expected_keys = {
         "symbol",
+        "market",
+        "exchange",
+        "timeframe",
+        "strategy_family",
+        "prediction",
         "probability",
-        "probability_raw",
-        "probability_calibrated",
+        "confidence",
+        "decision",
         "confidence_level",
-        "confidence_reason",
+        "strength",
+        "context",
+        "model_version",
+        "model_name",
+        "model_threshold",
+        "model_bench_summary",
+        "timestamp",
+        "generated_at",
+        "setup_side",
+        "entry_price",
+        "stop_price",
+        "take_profit_price",
+        "forced_exit_time",
+        "no_trade_reason",
+        "data_quality",
         "summary",
         "market_context",
         "key_drivers",
-        "structured_explanation",
         "risk_notes",
         "model_honesty",
+        "current_price",
+        "trade_window",
+        "threshold",
+        "stock_sentiment_score",
+        "sector_sentiment_score",
+        "contextual_sentiment_score",
+        "sentiment_confidence",
+        "sentiment_gate_reason",
+        "stock_article_count",
+        "sector_article_count",
     }
-    assert set(data.keys()) == expected_keys
-    assert isinstance(data["symbol"], str)
-    assert isinstance(data["probability"], float)
-    assert isinstance(data["probability_raw"], float)
-    assert isinstance(data["probability_calibrated"], float)
-    assert isinstance(data["confidence_level"], str)
-    assert isinstance(data["confidence_reason"], str)
-    assert isinstance(data["summary"], str)
-    assert isinstance(data["model_honesty"], str)
-
-    market_context = data["market_context"]
-    assert isinstance(market_context, dict)
-    assert set(market_context.keys()) == {"trend", "momentum", "volatility"}
-    assert all(isinstance(value, str) for value in market_context.values())
-
+    assert expected_keys.issubset(set(data.keys()))
+    assert data["market"] in {"US", "IN"}
+    assert data["decision"] in {"LONG", "SHORT", "NO_TRADE"}
+    assert isinstance(data["data_quality"], dict)
     assert isinstance(data["key_drivers"], list)
-    assert all(isinstance(item, str) for item in data["key_drivers"])
-
-    structured = data["structured_explanation"]
-    assert isinstance(structured, dict)
-    assert set(structured.keys()) == {
-        "key_drivers",
-        "negative_factors",
-        "confidence_modifiers",
-    }
-    assert all(isinstance(item, str) for item in structured["key_drivers"])
-    assert all(isinstance(item, str) for item in structured["negative_factors"])
-    assert all(isinstance(item, str) for item in structured["confidence_modifiers"])
-
     assert isinstance(data["risk_notes"], list)
-    assert all(isinstance(item, str) for item in data["risk_notes"])

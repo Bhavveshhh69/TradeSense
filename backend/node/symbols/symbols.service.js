@@ -1,8 +1,9 @@
 const repository = require('./symbols.repository');
 
-function createHttpError(status, message) {
+function createHttpError(status, message, extra = {}) {
   const error = new Error(message);
   error.status = status;
+  Object.assign(error, extra);
   return error;
 }
 
@@ -19,93 +20,235 @@ function normalizeInputSymbol(inputSymbol) {
   return normalized;
 }
 
-function buildSearchCatalog(registries) {
-  const catalog = new Set();
-
-  for (const symbol of registries.nseSymbols) {
-    catalog.add(symbol);
-    catalog.add(`${symbol}.NS`);
+function normalizeMarketFilter(inputValue) {
+  if (typeof inputValue !== 'string' || !inputValue.trim()) {
+    return null;
   }
 
-  for (const symbol of registries.bseSymbols) {
-    catalog.add(symbol);
-    catalog.add(`${symbol}.BO`);
+  const normalized = inputValue.trim().toUpperCase();
+  if (!['US', 'IN'].includes(normalized)) {
+    throw createHttpError(400, 'market must be one of US or IN');
   }
 
-  for (const symbol of registries.usSymbols) {
-    catalog.add(symbol);
+  return normalized;
+}
+
+function normalizeKindFilter(inputValue) {
+  if (typeof inputValue !== 'string' || !inputValue.trim()) {
+    return null;
   }
 
-  for (const symbol of registries.indices) {
-    catalog.add(symbol);
+  const normalized = inputValue.trim().toUpperCase();
+  if (['EQUITY', 'EQUITIES', 'STOCK', 'STOCKS'].includes(normalized)) {
+    return 'Equity';
+  }
+  if (['INDEX', 'INDICES'].includes(normalized)) {
+    return 'Index';
   }
 
-  return [...catalog];
+  throw createHttpError(400, 'kind must be one of equity or index');
+}
+
+function normalizeLimit(limitValue, defaultValue = 40) {
+  if (limitValue === undefined || limitValue === null || limitValue === '') {
+    return defaultValue;
+  }
+
+  const numericValue = Number(limitValue);
+  if (!Number.isFinite(numericValue)) {
+    throw createHttpError(400, 'limit must be a number');
+  }
+
+  const normalized = Math.trunc(numericValue);
+  if (normalized < 1 || normalized > 100) {
+    throw createHttpError(400, 'limit must be between 1 and 100');
+  }
+
+  return normalized;
+}
+
+function buildSearchBlob(instrument) {
+  return [
+    instrument.symbol,
+    instrument.normalized,
+    instrument.display_name,
+    instrument.exchange,
+    instrument.market,
+    instrument.instrument_type,
+    ...(Array.isArray(instrument.search_terms) ? instrument.search_terms : []),
+  ]
+    .filter((value) => typeof value === 'string' && value.trim())
+    .join(' ')
+    .toUpperCase();
+}
+
+function scoreInstrument(instrument, query) {
+  const normalizedQuery = query.trim().toUpperCase();
+  const searchBlob = buildSearchBlob(instrument);
+
+  if (instrument.normalized === normalizedQuery) {
+    return 140;
+  }
+  if (instrument.symbol === normalizedQuery) {
+    return 130;
+  }
+  if (instrument.display_name.toUpperCase() === normalizedQuery) {
+    return 120;
+  }
+  if (instrument.symbol.startsWith(normalizedQuery)) {
+    return 100;
+  }
+  if (instrument.normalized.startsWith(normalizedQuery)) {
+    return 95;
+  }
+  if (instrument.display_name.toUpperCase().startsWith(normalizedQuery)) {
+    return 85;
+  }
+  if (searchBlob.includes(normalizedQuery)) {
+    return 60;
+  }
+  return 0;
+}
+
+function groupLabelForInstrument(instrument) {
+  if (instrument.instrument_type === 'Index') {
+    return instrument.market === 'IN' ? 'India Indices' : 'US Indices';
+  }
+
+  return instrument.market === 'IN' ? 'India Equities' : 'US Equities';
+}
+
+async function getInstrumentCatalog() {
+  const payload = await repository.getMarketMaster();
+  return payload.instruments;
+}
+
+async function buildIndexes() {
+  const instruments = await getInstrumentCatalog();
+  const byNormalized = new Map();
+  const bySymbol = new Map();
+  const byDisplayName = new Map();
+
+  for (const instrument of instruments) {
+    byNormalized.set(instrument.normalized, instrument);
+
+    const bySymbolList = bySymbol.get(instrument.symbol) || [];
+    bySymbolList.push(instrument);
+    bySymbol.set(instrument.symbol, bySymbolList);
+
+    const displayKey = instrument.display_name.toUpperCase();
+    const byDisplayNameList = byDisplayName.get(displayKey) || [];
+    byDisplayNameList.push(instrument);
+    byDisplayName.set(displayKey, byDisplayNameList);
+  }
+
+  return { instruments, byNormalized, bySymbol, byDisplayName };
+}
+
+async function resolveInstrument(inputSymbol) {
+  const symbol = normalizeInputSymbol(inputSymbol);
+  const { byNormalized, bySymbol, byDisplayName } = await buildIndexes();
+
+  const exactNormalized = byNormalized.get(symbol);
+  if (exactNormalized) {
+    return {
+      ...exactNormalized,
+      changed: exactNormalized.normalized !== symbol,
+      ambiguous: false,
+    };
+  }
+
+  const rawSymbolMatches = bySymbol.get(symbol) || [];
+  if (rawSymbolMatches.length === 1) {
+    const instrument = rawSymbolMatches[0];
+    return {
+      ...instrument,
+      changed: instrument.normalized !== symbol,
+      ambiguous: false,
+    };
+  }
+
+  if (rawSymbolMatches.length > 1) {
+    throw createHttpError(409, `symbol ${symbol} is ambiguous; select a specific market instrument`, {
+      matches: rawSymbolMatches,
+    });
+  }
+
+  const displayNameMatches = byDisplayName.get(symbol) || [];
+  if (displayNameMatches.length === 1) {
+    const instrument = displayNameMatches[0];
+    return {
+      ...instrument,
+      changed: true,
+      ambiguous: false,
+    };
+  }
+
+  if (displayNameMatches.length > 1) {
+    throw createHttpError(409, `instrument ${symbol} is ambiguous; select a specific market instrument`, {
+      matches: displayNameMatches,
+    });
+  }
+
+  throw createHttpError(404, `symbol ${symbol} is unsupported in the current market master`);
 }
 
 async function normalizeSymbol(inputSymbol) {
-  const symbol = normalizeInputSymbol(inputSymbol);
-
-  if (symbol.endsWith('.NS') || symbol.endsWith('.BO')) {
-    return symbol;
-  }
-
-  const registries = await repository.getSymbolRegistries();
-
-  if (registries.indices.includes(symbol)) {
-    return symbol;
-  }
-
-  if (registries.nseSymbols.includes(symbol)) {
-    return `${symbol}.NS`;
-  }
-
-  if (registries.bseSymbols.includes(symbol)) {
-    return `${symbol}.BO`;
-  }
-
-  if (registries.usSymbols.includes(symbol)) {
-    return symbol;
-  }
-
-  return symbol;
+  const instrument = await resolveInstrument(inputSymbol);
+  return instrument.normalized;
 }
 
 async function validateSymbol(inputSymbol) {
-  if (typeof inputSymbol !== 'string') {
-    return false;
+  try {
+    await resolveInstrument(inputSymbol);
+    return true;
+  } catch (error) {
+    if (error?.status === 404 || error?.status === 409 || error?.status === 400) {
+      return false;
+    }
+    throw error;
   }
-
-  const symbol = inputSymbol.trim().toUpperCase();
-  if (!symbol) {
-    return false;
-  }
-
-  const registries = await repository.getSymbolRegistries();
-  const catalog = buildSearchCatalog(registries);
-  return catalog.includes(symbol);
 }
 
-async function searchSymbols(query) {
-  if (typeof query !== 'string') {
-    return [];
-  }
-
-  const normalizedQuery = query.trim().toUpperCase();
+async function searchSymbols({ query, market, kind, limit } = {}) {
+  const normalizedQuery = typeof query === 'string' ? query.trim().toUpperCase() : '';
   if (!normalizedQuery) {
     return [];
   }
 
-  const registries = await repository.getSymbolRegistries();
-  const catalog = buildSearchCatalog(registries);
+  const marketFilter = normalizeMarketFilter(market);
+  const kindFilter = normalizeKindFilter(kind);
+  const resultLimit = normalizeLimit(limit, 40);
+  const catalog = await getInstrumentCatalog();
 
   return catalog
-    .filter((symbol) => symbol.includes(normalizedQuery))
-    .sort((a, b) => a.localeCompare(b));
+    .filter((instrument) => (marketFilter ? instrument.market === marketFilter : true))
+    .filter((instrument) => (kindFilter ? instrument.instrument_type === kindFilter : true))
+    .map((instrument) => ({
+      instrument,
+      score: scoreInstrument(instrument, normalizedQuery),
+    }))
+    .filter((item) => item.score > 0)
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+      return left.instrument.normalized.localeCompare(right.instrument.normalized);
+    })
+    .slice(0, resultLimit)
+    .map(({ instrument }) => ({
+      ...instrument,
+      group_label: groupLabelForInstrument(instrument),
+    }));
 }
 
 module.exports = {
+  getInstrumentCatalog,
+  normalizeKindFilter,
+  normalizeLimit,
+  normalizeMarketFilter,
   normalizeSymbol,
+  resolveInstrument,
   searchSymbols,
   validateSymbol,
 };

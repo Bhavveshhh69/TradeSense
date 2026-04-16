@@ -28,7 +28,10 @@ def _mock_download(symbol, start=None, end=None, interval=None, auto_adjust=None
 
 
 def test_phase1_outputs(monkeypatch):
-    monkeypatch.setattr("tradesense.data_provider.yf.download", _mock_download)
+    monkeypatch.setattr(
+        "tradesense.data_provider._fetch_symbol_history",
+        lambda symbol, **kwargs: _mock_download(symbol),
+    )
 
     symbols = ["AAA", "BBB"]
     result = get_market_data(symbols, "2020-01-01", "2020-06-01")

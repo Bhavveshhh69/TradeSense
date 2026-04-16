@@ -20,6 +20,16 @@ async function addHolding(req, res) {
   }
 }
 
+async function createTrade(req, res) {
+  try {
+    const trade = await portfolioService.createTrade(req.body || {});
+    const portfolio = await portfolioService.getHoldings();
+    return res.status(201).json({ success: true, trade, portfolio });
+  } catch (error) {
+    return handleError(res, error);
+  }
+}
+
 async function getHoldings(req, res) {
   try {
     const payload = await portfolioService.getHoldings();
@@ -56,6 +66,25 @@ async function getAdvisor(req, res) {
   }
 }
 
+async function getTransactions(req, res) {
+  try {
+    const payload = await portfolioService.getTransactions();
+    return res.status(200).json(payload);
+  } catch (error) {
+    return handleError(res, error);
+  }
+}
+
+async function adjustPosition(req, res) {
+  try {
+    const trades = await portfolioService.adjustPosition(req.params.symbol, req.body || {});
+    const portfolio = await portfolioService.getHoldings();
+    return res.status(201).json({ success: true, trades, portfolio });
+  } catch (error) {
+    return handleError(res, error);
+  }
+}
+
 async function deleteHolding(req, res) {
   try {
     await portfolioService.deleteHolding(req.params.id);
@@ -67,9 +96,12 @@ async function deleteHolding(req, res) {
 
 module.exports = {
   addHolding,
+  adjustPosition,
+  createTrade,
   getAdvisor,
   deleteHolding,
   getHistory,
   getInsights,
   getHoldings,
+  getTransactions,
 };

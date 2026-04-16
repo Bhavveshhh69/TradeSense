@@ -20,6 +20,8 @@ const express = require('express');
 const axios = require('axios');
 
 const analyzeRoutes = require('./routes/analyze');
+const commandCenterRoutes = require('./routes/command-center');
+const marketRoutes = require('./routes/market');
 const portfolioRoutes = require('../portfolio/portfolio.routes');
 const symbolsRoutes = require('../symbols/symbols.routes');
 
@@ -33,6 +35,8 @@ app.use((err, req, res, next) => {
   return next(err);
 });
 app.use('/api', analyzeRoutes);
+app.use('/api', commandCenterRoutes);
+app.use('/api', marketRoutes);
 app.use('/api', portfolioRoutes);
 app.use('/api', symbolsRoutes);
 

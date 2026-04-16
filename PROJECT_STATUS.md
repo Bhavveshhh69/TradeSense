@@ -1,4 +1,101 @@
-# TradeSense Project Documentation (Through Phase 8A)
+# TradeSense Project Documentation (Practicality Pass Complete)
+
+## Recovery Ledger (2026-04-16)
+
+### Objective
+Recover the interrupted TradeSense practicality pass, verify the real shipped state against the live codebase, finish the remaining integration and verification work end to end, and leave the repo in a clean shippable state.
+
+### Scope In
+- Real route-based trader workflow across `Today`, `Analysis`, and `Portfolio`.
+- Strict symbol search/normalization for US and India equities plus curated benchmark indices.
+- Live market quote/history routes, analysis route, validation/backtest route, command-center route, and ledger-backed paper portfolio routes.
+- Frontend shell parity, portfolio workspace, validation panel, and global paper-trade drawer.
+- Full verification matrix, live API verification, live browser verification, and documentation refresh.
+
+### Scope Out
+- Multi-user auth, production database persistence, and broker connectivity.
+- P&L/profitability claims derived from validation metrics.
+- Full bundle-splitting/performance hardening beyond correctness and usability.
+
+### Locked Decisions
+- TradeSense v1 uses a real route-based React shell instead of a single scrolling dashboard.
+- Mobile behavior stays responsive within the same routes, not separate mobile routes.
+- Instrument search uses grouped async dropdown results with metadata for India, US, and indices.
+- Portfolio state is ledger-backed with explicit `BUY`, `SELL`, `SHORT`, and `COVER` trades plus adjustment entries.
+- `Alerts` and `Daily Review` remain visible concept screens with no fake persistence.
+- Python intraday inference and validation are part of the product contract and must stay honest about `NO_TRADE` outcomes.
+- Fresh shipped state must contain no seeded holdings, no seeded trades, and no seeded recent analyses.
+
+### Completed
+- Reconstructed the interrupted state from the worktree, git history, and continuity file without widening scope.
+- Confirmed the codebase had already moved beyond the stale ledger: backend market/command-center/portfolio work, frontend routed shell, tests, and Playwright suite were already present in code.
+- Reset runtime JSON persistence to a clean shipped state and re-verified clean empty portfolio/transaction/recent-analysis behavior after live testing.
+- Backend symbol search and normalization now resolve:
+  - US equity: `NVDA`
+  - India equity: `RELIANCE.NS`
+  - US index: `^GSPC`
+  - India index: `^NSEI`
+- Backend market quote/history routes, command-center aggregation, recent-analysis persistence, and ledger-backed portfolio routes are implemented and working.
+- India benchmark indices are now handled correctly by the Python intraday market resolver.
+- Frontend routed shell, pinned active instrument bar, quote strip, analysis workspace, validation panel, recent-symbol reopen flow, and global paper-trade drawer are implemented.
+- Full verification passed on 2026-04-16:
+  - `cd backend/node && npm test -- --runInBand` -> `9` suites, `48` tests passed
+  - `./.venv/bin/pytest -q backend/python/tests` -> `58` tests passed, `1` XGBoost model-serialization warning
+  - `cd frontend && npm test` -> `2` files, `5` tests passed
+  - `cd frontend && npm run lint` -> passed
+  - `cd frontend && npm run build` -> passed
+  - `cd frontend && npm run test:e2e` -> `4` Playwright tests passed
+- Live API verification passed on 2026-04-16:
+  - `GET /api/market/quote/{symbol}` succeeded for `NVDA`, `RELIANCE.NS`, `^GSPC`, and `^NSEI`
+  - `POST /api/analyze` returned honest `NO_TRADE` outputs for both `NVDA` and `RELIANCE.NS`
+  - `POST /api/analyze/validate` returned live leak-safe classification metrics for `NVDA` and `RELIANCE.NS`
+- Live browser verification passed against the real running stack at `http://127.0.0.1:4173/`:
+  - selected `NVDA`
+  - rendered live quote strip
+  - ran live analysis
+  - rendered live validation metrics in the real UI
+
+### In Progress
+- None for the practicality pass itself. Remaining items are production-hardening follow-ups, not blocked implementation work.
+
+### Next Safe Step
+If work continues beyond this pass, the next safe step is production hardening:
+- replace JSON persistence with a durable store
+- split the large frontend bundle
+- add auth and user scoping
+- expand live-browser coverage beyond the current operator-critical flows
+
+### Evidence
+- `README.md`
+- `frontend/src/App.jsx`
+- `frontend/src/components/InstrumentPicker.jsx`
+- `frontend/src/App.test.jsx`
+- `frontend/src/components/InstrumentPicker.test.jsx`
+- `frontend/tests/smoke.spec.js`
+- `frontend/package.json`
+- `frontend/src/App.css`
+- `backend/node/server/routes/command-center.js`
+- `backend/node/server/routes/market.js`
+- `backend/node/server/routes/analyze.js`
+- `backend/node/server/services/recent_analysis.service.js`
+- `backend/node/portfolio/portfolio.routes.js`
+- `backend/python/tradesense/intraday/market.py`
+- `backend/python/tests/test_intraday_platform.py`
+- `backend/python/tests/test_latest_price_endpoint.py`
+- `backend/python/tests/test_validation_endpoint.py`
+- 2026-04-16 verification:
+  - `cd backend/node && npm test -- --runInBand`
+  - `./.venv/bin/pytest -q backend/python/tests`
+  - `cd frontend && npm test`
+  - `cd frontend && npm run lint`
+  - `cd frontend && npm run build`
+  - `cd frontend && npm run test:e2e`
+  - Live Node/Python/API/browser checks on `http://127.0.0.1:3000`, `http://127.0.0.1:8000`, and `http://127.0.0.1:4173`
+
+### Residual Gaps
+- Frontend production build still emits a large-chunk warning (`~700 kB` main JS after minification); correctness is verified, but bundle splitting remains open.
+- Portfolio persistence is still JSON-file based and therefore single-user/dev oriented.
+- Live news and AI explanation richness still depend on external provider availability and configured keys.
 
 ## Project Overview
 TradeSense is a modular financial intelligence system implemented as a Python analytics stack with a deterministic reasoning layer, a thin Node.js product API, and a minimal React frontend. The Python codebase covers market data ingestion, indicator computation, feature engineering, probabilistic modeling, deterministic reasoning, end-to-end inference, optional sentiment/news enrichment, and a local RAG memory layer for explainability. The FastAPI service exposes both reasoning and analysis endpoints. The Node.js Express service provides a frontend-safe API that validates requests, forwards them to the Python service, and returns responses without transformation.

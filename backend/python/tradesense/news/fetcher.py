@@ -1,8 +1,8 @@
-﻿"""Finnhub news fetcher for TradeSense (Phase 7B)."""
+"""Finnhub news fetcher for TradeSense."""
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import os
 from typing import List
 
@@ -13,14 +13,37 @@ _LOOKBACK_DAYS = 7
 _TIMEOUT_SECONDS = 10.0
 
 
-def _date_range() -> tuple[str, str]:
-    end_date = date.today()
-    start_date = end_date - timedelta(days=_LOOKBACK_DAYS)
-    return start_date.isoformat(), end_date.isoformat()
+def _to_iso_date(value: date | datetime | str | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    text = str(value).strip()
+    return text or None
 
 
-def fetch_news(symbol: str, limit: int = 10) -> List[str]:
-    """Fetch recent company news from Finnhub.
+def _date_range(
+    start_date: date | datetime | str | None = None,
+    end_date: date | datetime | str | None = None,
+) -> tuple[str, str]:
+    end_text = _to_iso_date(end_date) or date.today().isoformat()
+    start_text = _to_iso_date(start_date)
+    if start_text is None:
+        parsed_end = date.fromisoformat(end_text)
+        start_text = (parsed_end - timedelta(days=_LOOKBACK_DAYS)).isoformat()
+    return start_text, end_text
+
+
+def fetch_news(
+    symbol: str,
+    limit: int = 10,
+    *,
+    start_date: date | datetime | str | None = None,
+    end_date: date | datetime | str | None = None,
+) -> List[str]:
+    """Fetch company news from Finnhub.
 
     Returns a list of raw text items (headline + summary/body). Network or API
     failures return an empty list; the API key is never logged.
@@ -41,11 +64,11 @@ def fetch_news(symbol: str, limit: int = 10) -> List[str]:
     if not api_key:
         return []
 
-    start_date, end_date = _date_range()
+    start_date_text, end_date_text = _date_range(start_date, end_date)
     params = {
         "symbol": symbol.upper().strip(),
-        "from": start_date,
-        "to": end_date,
+        "from": start_date_text,
+        "to": end_date_text,
         "token": api_key,
     }
 

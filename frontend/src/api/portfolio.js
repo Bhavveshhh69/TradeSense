@@ -9,6 +9,30 @@ export async function fetchPortfolio() {
   return response.data
 }
 
+export async function createPortfolioTrade(payload) {
+  const response = await apiClient.post('/api/portfolio/trades', payload)
+  return response.data
+}
+
+export async function fetchPortfolioTransactions() {
+  const response = await apiClient.get('/api/portfolio/transactions')
+  return response.data
+}
+
+export async function adjustPortfolioPosition(symbol, payload) {
+  const normalizedSymbol = typeof symbol === 'string' ? symbol.trim().toUpperCase() : ''
+
+  if (!normalizedSymbol) {
+    throw new Error('symbol is required')
+  }
+
+  const response = await apiClient.post(
+    `/api/portfolio/positions/${encodeURIComponent(normalizedSymbol)}/adjust`,
+    payload,
+  )
+  return response.data
+}
+
 export async function addPortfolioHolding(payload) {
   const response = await apiClient.post('/api/portfolio/add', payload)
   return response.data

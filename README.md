@@ -1,150 +1,372 @@
-# TradeSense: AI-Powered Portfolio Intelligence
+# TradeSense
 
-TradeSense is a sophisticated market analysis and portfolio intelligence system designed to provide deep insights into financial markets and personal investment portfolios. It leverages a combination of machine learning, deterministic reasoning, and AI-driven explanations to help users make informed decisions.
+TradeSense is an active-trader workspace for US and India markets. It combines a React operator shell, a Node.js product API, and a Python intraday inference/backtesting service so a trader can lock one instrument, inspect live quote context, run an honest analysis, validate the model on a leak-safe historical window, and manage a paper portfolio from the same workspace.
 
-## Problem Solved
+## Current Status
 
-In today's complex financial markets, investors face a deluge of data and a shortage of clear, actionable insights. TradeSense addresses this by:
-- **Automating Analysis**: Replacing manual, time-consuming market research with an automated ML-driven pipeline.
-- **Providing Clarity**: Translating complex model outputs into deterministic, easy-to-understand decisions and context.
-- **Unifying Portfolio View**: Offering a single, intelligent platform to track, analyze, and get advice on personal stock portfolios, even across different markets like the US and India.
-- **Explaining the "Why"**: Going beyond black-box predictions by offering AI-generated explanations for its analysis.
+Verified on `2026-04-16` (Asia/Kolkata / IST):
 
-## Key Features
+- The practical product surface is working end to end.
+- The app ships with a clean empty state:
+  - no seeded holdings
+  - no seeded paper trades
+  - no seeded recent analyses
+- The routed shell is live across:
+  - `Today`
+  - `Analysis`
+  - `Portfolio`
+- Supported instrument coverage is live for:
+  - US equities
+  - India equities
+  - curated US benchmark indices
+  - curated India benchmark indices
 
-- **AI-Driven Stock Analysis**: Get ML-powered predictions, decisions (BUY/SELL/HOLD), and contextual summaries for any stock.
-- **Comprehensive Portfolio Tracking**: Manage your stock holdings, track their performance, and visualize your asset allocation.
-- **Advanced Portfolio Intelligence**: Receive insights on portfolio concentration, diversification, volatility, and performance.
-- **Actionable Advisor**: Get rule-based recommendations to improve your portfolio's health (e.g., rebalancing concentrated positions).
-- **Multi-Currency Support**: Analyze portfolios containing stocks from different markets (e.g., NASDAQ and NSE) with proper currency conversion and analysis.
-- **AI Explanation Layer**: Understand the reasoning behind the system's analysis with an optional RAG- and LLM-powered explanation engine.
+## What The Product Does Now
 
-## System Architecture
+### 1. Active instrument workflow
 
-TradeSense employs a modern microservice-oriented architecture:
+- Search and lock a supported symbol from the top bar.
+- Keep the selected instrument pinned across every route.
+- Show a persistent live quote strip with:
+  - current price
+  - day change
+  - 5-day trend
+  - 30-day trend
 
-- **Frontend**: A responsive **React** application provides the user interface for portfolio management and stock analysis.
-- **Node.js Backend (API Gateway)**: An **Express** server acts as the primary API for the frontend. It handles user requests, manages portfolio data (stored in a JSON file), and communicates with the Python backend. It serves as an orchestration and enrichment layer.
-- **Python Backend (ML & Data Service)**: A **FastAPI** server that exposes the core machine learning, data, and intelligence capabilities. This includes the ML prediction pipeline, market data access, and the AI explanation services.
+### 2. Analysis workspace
 
-The system is designed with a clear separation of concerns, which allows for scalability and maintainability.
+- Run the live analysis flow for the locked instrument.
+- Render the product-safe decision state in the UI:
+  - signal
+  - confidence
+  - execution blockers
+  - observed context
+  - model honesty note
+- Reopen recent analyses directly from the UI.
 
-## Technology Stack
+### 3. Validation workspace
 
-- **Frontend**: React, Vite, Axios, Recharts
-- **Backend (Node.js)**: Express.js, Axios, Jest
-- **Backend (Python)**: FastAPI, Uvicorn, Pandas, NumPy, Scikit-learn, XGBoost, Joblib, Pytest, Transformers, Torch, FAISS-CPU
-- **Data Sources**: yfinance (market data), Finnhub (news)
+- Run a leak-safe backtest/validation window directly from the product UI.
+- Show classification-quality metrics instead of pretending they are P&L:
+  - total predictions
+  - accuracy
+  - expected calibration error
+  - Brier score
+  - reliability buckets
 
-## Data Flow
+### 4. Portfolio workspace
 
-A typical request, such as analyzing a stock, follows this path:
-1. The **React Frontend** sends a request to the **Node.js API Gateway**.
-2. The **Node.js Gateway** validates the request, checks its in-memory cache, and then calls the relevant endpoints on the **Python ML Service**. This might involve fetching the latest price and running a prediction.
-3. The **Python Service** executes the ML pipeline: it fetches market data from **yfinance**, builds features, and uses the trained XGBoost model to generate a prediction and deterministic insights.
-4. The Python service returns the structured data to the Node.js gateway.
-5. The **Node.js Gateway** enriches this data (e.g., adding a human-readable recommendation) and sends the final response to the frontend.
-6. The **React Frontend** displays the information to the user.
+- Maintain a ledger-backed paper portfolio.
+- Support `BUY`, `SELL`, `SHORT`, `COVER`, and position adjustments.
+- Surface:
+  - portfolio summary
+  - allocation
+  - history
+  - portfolio insights
+  - portfolio advisor
+- Keep the paper-trade drawer reachable from every screen.
 
-## Machine Learning Pipeline
+### 5. Command center surface
 
-The core of TradeSense is its ML pipeline for stock prediction:
+- Show market sessions for India and the US.
+- Show portfolio risk framing and operator brief.
+- Surface recent signals and market headline context when available.
 
-1.  **Data Ingestion**: Fetches historical market data (OHLCV) using the `yfinance` library.
-2.  **Indicator Calculation**: Computes technical indicators like RSI, EMA, and MACD.
-3.  **Feature Engineering**: Creates a feature matrix from the raw data and indicators.
-4.  **Prediction**: A pre-trained **XGBoost** model (`xgboost.joblib`) predicts the probability of a 5-day price continuation. The model is calibrated to ensure the probabilities are reliable.
-5.  **Deterministic Reasoning**: The model's probability output is fed into a rule-based engine that generates a clear `decision` (BUY, SELL, HOLD), `confidence_level`, and contextual summaries about market trends and risks.
+## What Was Completed In This Practicality Pass
 
-## Market Intelligence Layer
+- Replaced the generic dashboard flow with a real trader workflow.
+- Added strict market-master driven symbol search and normalization.
+- Added live Node routes for quote snapshots and market history.
+- Added a Node command-center route and recent-analysis persistence.
+- Migrated portfolio handling to a ledger-backed trade model.
+- Added Python validation/backtest exposure at `/analyze/validate`.
+- Fixed India benchmark index resolution in the intraday stack.
+- Added frontend unit tests and Playwright browser coverage.
+- Fixed top-bar layout issues so:
+  - the instrument picker panel opens fully without clipping
+  - the primary navigation remains visible instead of collapsing out
 
-This layer is responsible for providing real-time and historical market data. It is primarily implemented in the Python backend and uses the `yfinance` library to fetch data from Yahoo Finance.
+## Architecture
 
-## Portfolio Intelligence Engine
+```text
+React frontend
+  -> Node.js Express product API
+     -> Python FastAPI intraday + validation service
+        -> yfinance market data
+        -> trained intraday models
+        -> leak-safe validation/backtesting engine
+```
 
-Located in the Node.js backend, this engine provides high-level insights into the user's portfolio. It calculates:
-- **Total Portfolio Value & P&L**: With correct handling of multi-currency assets.
-- **Asset Allocation**: The weight of each holding in the portfolio.
-- **Concentration & Diversification**: Metrics to assess portfolio risk.
-- **Volatility & Performance**: Analysis of the best and worst-performing assets.
+### Frontend
 
-## AI Explanation Layer
+Location: `frontend/`
 
-For users who want to dig deeper, TradeSense offers an advanced AI explanation layer. When enabled, it uses:
-- **RAG (Retrieval-Augmented Generation)**: To retrieve historical context about past predictions for a given stock from a local vector store.
-- **LLM Integration (OpenAI/Groq)**: To generate a human-readable explanation of the current analysis, incorporating the latest prediction, deterministic insights, and historical context.
+Responsibilities:
 
-## External APIs Used
+- routed operator shell
+- active-instrument state
+- quote strip and analysis UI
+- validation panel
+- paper-trade drawer
+- portfolio charts and portfolio insight surfaces
 
-- **yfinance**: The primary source for historical and real-time market data.
-- **Finnhub**: An optional source for news headlines to power the sentiment analysis feature. Requires a `FINNHUB_API_KEY`.
-- **OpenAI/Groq**: Optional for the AI Explanation Layer. Requires an `OPENAI_API_KEY` or `GROQ_API_KEY`.
+Key files:
 
-## How the System Runs (Node + Python interaction)
+- `frontend/src/App.jsx`
+- `frontend/src/App.css`
+- `frontend/src/components/InstrumentPicker.jsx`
+- `frontend/src/api/analysis.js`
+- `frontend/src/api/symbols.js`
+- `frontend/src/api/portfolio.js`
+- `frontend/src/api/commandCenter.js`
 
-The two backends work in concert:
-- The **Python backend** is the "brain," focusing on complex data processing and machine learning. It runs as a standalone FastAPI server.
-- The **Node.js backend** is the "face" for the frontend, providing a stable API, handling user-specific data like portfolios, and orchestrating calls to the Python backend.
+### Node product API
 
-This dual-backend architecture allows for using the best tool for the job: Python for data science and Node.js for scalable web services.
+Location: `backend/node/`
 
-## Environment Variables
+Responsibilities:
 
-The system uses a `.env` file in the `backend/node` directory to manage configuration and API keys. Key variables include:
+- symbol search and normalization
+- command-center aggregation
+- recent-analysis persistence
+- portfolio ledger routes
+- market quote/history composition
+- frontend-safe orchestration of Python routes
 
-- `PORT`: The port for the Node.js server (e.g., 3000).
-- `REASONING_URL`: The URL of the Python FastAPI server (e.g., `http://localhost:8000/predict`).
-- `FINNHUB_API_KEY`: For news fetching.
-- `GROQ_API_KEY` / `OPENAI_API_KEY`: For the AI explanation layer.
+Key routes:
 
-## How to Run the Project
+- `GET /api/symbols/search`
+- `GET /api/symbols/normalize/:symbol`
+- `GET /api/market/quote/:symbol`
+- `GET /api/market/history/:symbol`
+- `POST /api/analyze`
+- `GET /api/analyze/recent`
+- `POST /api/analyze/validate`
+- `GET /api/command-center`
+- `GET /api/portfolio`
+- `POST /api/portfolio/trades`
+- `GET /api/portfolio/transactions`
+- `POST /api/portfolio/positions/:symbol/adjust`
 
-1.  **Start the Python Backend:**
-    ```sh
-    cd backend/python
-    # Install dependencies
-    pip install -r requirements.txt
-    # Run the server
-    uvicorn tradesense.api:app --reload --port 8000
-    ```
+Key files:
 
-2.  **Start the Node.js Backend:**
-    ```sh
-    cd backend/node
-    # Install dependencies
-    npm install
-    # Run the server
-    node server/index.js
-    ```
+- `backend/node/server/index.js`
+- `backend/node/server/routes/analyze.js`
+- `backend/node/server/routes/market.js`
+- `backend/node/server/routes/command-center.js`
+- `backend/node/server/services/recent_analysis.service.js`
+- `backend/node/portfolio/portfolio.routes.js`
 
-3.  **Start the Frontend:**
-    ```sh
-    cd frontend
-    # Install dependencies
-    npm install
-    # Run the development server
-    npm run dev
-    ```
+### Python intraday + validation service
 
-You can now access the application at `http://localhost:5173`.
+Location: `backend/python/`
 
-## Testing Overview
+Responsibilities:
 
-The project has a strong emphasis on testing:
-- **Python**: Uses `pytest` for unit and integration tests covering data processing, feature engineering, ML modeling, and API endpoints.
-- **Node.js**: Uses `Jest` and `Supertest` to test the API endpoints, services, and repository layers.
+- intraday inference
+- latest-price and price-history access
+- model-backed prediction outputs
+- leak-safe validation/backtests
+- market resolution for US and India sessions
 
-To run the tests:
-- **Python**: `cd backend/python && pytest`
-- **Node.js**: `cd backend/node && npm test`
+Key routes:
 
-## Limitations
+- `POST /predict`
+- `GET /market/latest-price/{symbol}`
+- `GET /market/history/{symbol}`
+- `POST /analyze`
+- `POST /analyze/validate`
+- `POST /reason`
 
-- The portfolio data is stored in a local JSON file, which is not suitable for a multi-user or production environment.
-- The system's performance depends on the availability of external APIs like Yahoo Finance.
+Key files:
 
-## Future Improvements
+- `backend/python/tradesense/api.py`
+- `backend/python/tradesense/api_predict.py`
+- `backend/python/tradesense/intraday/market.py`
+- `backend/python/tradesense/intraday/engine.py`
 
-- Migrate portfolio storage to a database for better scalability and multi-user support.
-- Expand the range of financial instruments beyond stocks.
-- Enhance the Portfolio Advisor with more sophisticated, customizable strategies.
+## Supported Symbol Coverage
+
+The symbol picker and normalization layer are now grounded in a compiled market master:
+
+- US equities from exchange symbol lists
+- India equities from NSE symbol lists
+- curated benchmark indices for both markets
+
+Verified live examples:
+
+| Query | Normalized | Market | Exchange | Type |
+| --- | --- | --- | --- | --- |
+| `NVDA` | `NVDA` | `US` | `NASDAQ` | `Equity` |
+| `RELIANCE` | `RELIANCE.NS` | `IN` | `NSE` | `Equity` |
+| `^GSPC` | `^GSPC` | `US` | `INDEX` | `Index` |
+| `^NSEI` | `^NSEI` | `IN` | `NSE` | `Index` |
+
+## Run Locally
+
+### 1. Python service
+
+```bash
+cd backend/python
+../../.venv/bin/python -m uvicorn tradesense.api:app --host 127.0.0.1 --port 8000
+```
+
+### 2. Node service
+
+```bash
+cd backend/node
+node server/index.js
+```
+
+### 3. Frontend
+
+```bash
+cd frontend
+npm run dev -- --host 127.0.0.1 --port 4173
+```
+
+Frontend dev proxy:
+
+- `/api` -> `http://localhost:3000`
+- `/market` -> `http://localhost:8000`
+
+## Verification Results
+
+These are the exact results from the final verification pass on `2026-04-16`.
+
+### Automated verification matrix
+
+| Layer | Command | Result |
+| --- | --- | --- |
+| Node API | `cd backend/node && npm test -- --runInBand` | `9` suites, `48` tests passed |
+| Python | `./.venv/bin/pytest -q backend/python/tests` | `58` tests passed, `1` XGBoost serialization warning |
+| Frontend unit | `cd frontend && npm test` | `2` files, `5` tests passed |
+| Frontend lint | `cd frontend && npm run lint` | passed |
+| Frontend build | `cd frontend && npm run build` | passed |
+| Browser suite | `cd frontend && npm run test:e2e` | `4` Playwright tests passed |
+
+Playwright suite coverage includes:
+
+- instrument picker coverage for US equity, India equity, US index, and India index
+- analysis + validation UI flow
+- global paper-trade drawer workflow
+- responsive layout checks
+
+Running `npm run test:e2e` also generates responsive screenshots under `frontend/test-results/`.
+
+### Live browser verification
+
+Verified against the real running stack at `http://127.0.0.1:4173`:
+
+- selected `NVDA` from the real search box
+- rendered the live quote strip
+- ran the live analysis flow
+- ran the live validation flow
+- confirmed the top-bar picker no longer clips and the primary nav remains visible
+
+### Live quote verification
+
+Observed live quote snapshots through `GET /api/market/quote/{symbol}` during the final pass:
+
+| Symbol | Market | Price | Day % | 5D % | 30D % | Currency | As Of |
+| --- | --- | ---: | ---: | ---: | ---: | --- | --- |
+| `NVDA` | US | `198.8678` | `0.3217%` | `0.7921%` | `9.5147%` | `USD` | `2026-04-15T19:45:00+00:00` |
+| `RELIANCE.NS` | IN | `1344.1000` | `0.0000%` | `0.2686%` | `-3.4688%` | `INR` | `2026-04-16T03:45:00+00:00` |
+| `^GSPC` | US | `7022.1001` | `0.0472%` | `0.1379%` | `3.0150%` | `USD` | `2026-04-15T19:45:00+00:00` |
+| `^NSEI` | IN | `24394.6992` | `0.7550%` | `0.6658%` | `-3.8236%` | `INR` | `2026-04-16T03:45:00+00:00` |
+
+### Live analysis verification
+
+Observed live `POST /api/analyze` results:
+
+| Symbol | Signal | Decision Label | Confidence | Trade Actionable | Result |
+| --- | --- | --- | --- | --- | --- |
+| `NVDA` | `NO_TRADE` | `No Trade` | `Strong` | `false` | Entry window is closed |
+| `RELIANCE.NS` | `NO_TRADE` | `No Trade` | `Strong` | `false` | Entry window has not opened yet |
+
+This is intentional. The system is now honest about when there is no actionable setup instead of forcing a fake trade call.
+
+### Live validation / backtest results
+
+Observed live `POST /api/analyze/validate` results on the final pass:
+
+Window used by the product:
+
+- start date: `2025-04-16`
+- end date: `2026-04-02`
+- horizon: `5` trading days
+
+| Symbol | Predictions | Accuracy | ECE | Brier Score | Reliability Points |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `NVDA` | `242` | `0.6157024793` | `0.0842813999` | `0.2433023972` | `1` |
+| `RELIANCE.NS` | `240` | `0.5250000000` | `0.0051776711` | `0.2492887428` | `1` |
+
+Important interpretation:
+
+- these are directional classification and calibration metrics
+- they are not profitability claims
+- the product UI explicitly states that validation does not claim P&L
+
+### Clean shipped-state verification
+
+After live verification, the persistence files were reset and rechecked.
+
+Final shipped state:
+
+- `GET /api/portfolio` -> `0` holdings / `0` active positions
+- `GET /api/portfolio/transactions` -> `0` transactions
+- `GET /api/command-center` -> `0` recent signals
+
+## Data And Persistence Behavior
+
+Current persistence is file-backed for practical local use:
+
+- `backend/node/data/portfolio.json`
+- `backend/node/data/portfolio_trades.json`
+- `backend/node/data/analysis_recent.json`
+
+These now ship empty by design. Running live analysis or live paper trades will repopulate them during use.
+
+## Environment Notes
+
+Important Node environment variables live in `backend/node/.env`.
+
+Common ones:
+
+- `PORT`
+- `REASONING_URL`
+- `PYTHON_API_BASE_URL`
+- `FINNHUB_API_KEY`
+- `ALPHA_VANTAGE_API_KEY`
+- `GROQ_API_KEY`
+
+## Known Limitations
+
+- Persistence is still JSON-file based, so this is a local/single-user setup rather than a production multi-user platform.
+- Frontend production build still emits a large chunk warning for the main JS bundle.
+- Live news context and AI explanation richness still depend on external provider availability and configured API keys.
+- Validation is an empirical classification check, not a brokerage-grade execution simulator.
+
+## Technical Intent
+
+The technical goal of this pass was to turn TradeSense from a partially connected prototype into a product surface that behaves like one consistent trader workflow:
+
+- one pinned instrument
+- one quote context
+- one honest analysis surface
+- one empirical validation surface
+- one ledger-backed paper portfolio
+
+That intent is now delivered and verified end to end.
+
+## Business Intent And What This Unlocks
+
+This pass changes TradeSense from “an ML demo with scattered screens” into “an operator-ready trading workspace.”
+
+What this unlocks:
+
+- A trader can move from symbol selection to analysis to validation to paper execution without losing context.
+- The product can now support both US and India workflows in the same shell instead of being biased toward one market.
+- Validation can be shown to users, stakeholders, or pilots as evidence of model behavior without overclaiming profitability.
+- Portfolio workflows can start from a clean slate, which makes demos, testing, and onboarding credible.
+- The app now behaves like a product that can be evaluated for real usability, not just backend correctness.

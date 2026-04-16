@@ -36,6 +36,27 @@ function extractPriceErrorMessage(error, symbol) {
   return `Unable to fetch current price (${symbol})`;
 }
 
+function extractProviderErrorPayload(error, fallbackStatus, fallbackMessage) {
+  if (error?.response) {
+    const providerError = new Error(fallbackMessage);
+    providerError.status = error.response.status;
+    providerError.data = error.response.data;
+    throw providerError;
+  }
+
+  if (error?.code === 'ECONNABORTED') {
+    const timeoutError = new Error(`${fallbackMessage} timeout`);
+    timeoutError.status = 504;
+    timeoutError.data = { error: `${fallbackMessage} timeout` };
+    throw timeoutError;
+  }
+
+  const providerError = new Error(fallbackMessage);
+  providerError.status = fallbackStatus;
+  providerError.data = { error: fallbackMessage };
+  throw providerError;
+}
+
 async function callReasoning(symbol) {
   const normalizedSymbol =
     typeof symbol === 'string' ? symbol.trim().toUpperCase() : '';
@@ -124,6 +145,9 @@ async function callLatestPrice(symbol) {
       current_price: latestPrice,
       price_error: false,
       price_error_message: null,
+      market: response?.data?.market || null,
+      timeframe: response?.data?.timeframe || null,
+      as_of: response?.data?.timestamp || null,
     };
   } catch (error) {
     return {
@@ -131,11 +155,67 @@ async function callLatestPrice(symbol) {
       current_price: null,
       price_error: true,
       price_error_message: extractPriceErrorMessage(error, normalizedSymbol),
+      market: null,
+      timeframe: null,
+      as_of: null,
     };
   }
 }
 
+async function callMarketHistory(symbol, days = 30) {
+  const normalizedSymbol =
+    typeof symbol === 'string' ? symbol.trim().toUpperCase() : '';
+  if (!normalizedSymbol) {
+    const error = new Error('Invalid history request');
+    error.status = 400;
+    error.data = { error: 'symbol is required' };
+    throw error;
+  }
+
+  const endpoint = `${normalizeProviderBaseUrl()}/market/history/${encodeURIComponent(
+    normalizedSymbol
+  )}`;
+
+  try {
+    const response = await axios.get(endpoint, {
+      timeout: REASONING_TIMEOUT_MS,
+      params: { days },
+    });
+    return response.data;
+  } catch (error) {
+    extractProviderErrorPayload(error, 502, 'Market history unavailable');
+  }
+}
+
+async function callValidation(symbol, payload = {}) {
+  const normalizedSymbol =
+    typeof symbol === 'string' ? symbol.trim().toUpperCase() : '';
+  if (!normalizedSymbol) {
+    const error = new Error('Invalid validation request');
+    error.status = 400;
+    error.data = { error: 'symbol is required' };
+    throw error;
+  }
+
+  const endpoint = `${normalizeProviderBaseUrl()}/analyze/validate`;
+  try {
+    const response = await axios.post(
+      endpoint,
+      {
+        symbol: normalizedSymbol,
+        ...payload,
+      },
+      { timeout: Math.max(REASONING_TIMEOUT_MS, 30000) }
+    );
+    return response.data;
+  } catch (error) {
+    extractProviderErrorPayload(error, 502, 'Validation service unavailable');
+  }
+}
+
 module.exports = {
+  callMarketHistory,
   callLatestPrice,
   callReasoning,
+  callValidation,
 };

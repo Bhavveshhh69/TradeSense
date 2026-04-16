@@ -1,9 +1,10 @@
 const express = require('express');
 
 const cache = require('../cache/memoryCache');
-const { callLatestPrice, callReasoning } = require('../services/reasoning');
+const { callLatestPrice, callReasoning, callValidation } = require('../services/reasoning');
 const symbolsService = require('../../symbols/symbols.service');
 const aiExplainer = require('../../services/ai_explainer.service');
+const recentAnalysisService = require('../services/recent_analysis.service');
 const validateAnalyzeRequest = require('../middleware/validate');
 
 const router = express.Router();
@@ -21,178 +22,45 @@ function normalizeProbability(probabilityValue) {
   return Math.max(0, Math.min(1, probability));
 }
 
-function computeSignalLabel(probabilityValue) {
-  const probability = normalizeProbability(probabilityValue);
-  if (probability === null) {
-    return 'HOLD';
+function titleCase(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return null;
   }
 
-  if (probability >= 0.7) {
-    return 'STRONG_BUY';
-  }
-
-  if (probability >= 0.58) {
-    return 'BUY';
-  }
-
-  if (probability > 0.42) {
-    return 'HOLD';
-  }
-
-  if (probability > 0.3) {
-    return 'SELL';
-  }
-
-  return 'STRONG_SELL';
+  return value
+    .toLowerCase()
+    .split(/[_\s]+/)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
 }
 
-function computeConfidenceTier(probabilityValue) {
-  const probability = normalizeProbability(probabilityValue);
-  if (probability === null) {
-    return 'LOW';
-  }
-
-  const distanceFromNeutral = Math.abs(probability - 0.5);
-  if (distanceFromNeutral >= 0.3) {
-    return 'STRONG';
-  }
-
-  if (distanceFromNeutral >= 0.2) {
-    return 'HIGH';
-  }
-
-  if (distanceFromNeutral >= 0.1) {
-    return 'MODERATE';
-  }
-
-  return 'LOW';
+async function resolveAnalyzeInstrument(rawSymbol) {
+  return symbolsService.resolveInstrument(rawSymbol);
 }
 
-function formatSignalLabel(signalLabel) {
-  const labels = {
-    STRONG_BUY: 'Strong Buy',
-    BUY: 'Buy',
-    HOLD: 'Hold',
-    SELL: 'Sell',
-    STRONG_SELL: 'Strong Sell',
+function buildRecentAnalysisEntry(analysis, instrument) {
+  return {
+    symbol: instrument.symbol,
+    normalized: instrument.normalized,
+    display_name: instrument.display_name,
+    market: instrument.market,
+    exchange: instrument.exchange,
+    instrument_type: instrument.instrument_type,
+    signal: analysis.signal,
+    decision_label: analysis.decision_label,
+    confidence_level: analysis.confidence_level,
+    current_price: analysis.current_price,
+    price_error: analysis.price_error,
+    price_error_message: analysis.price_error_message,
+    trend_summary: analysis.trend_summary,
+    risk_summary: analysis.risk_summary,
+    signal_explanation: analysis.signal_explanation,
+    trade_actionable: analysis.trade_actionable,
+    recorded_at: new Date().toISOString(),
   };
-  return labels[signalLabel] || 'Hold';
 }
 
-function formatConfidenceTier(confidenceTier) {
-  const tiers = {
-    LOW: 'Low',
-    MODERATE: 'Moderate',
-    HIGH: 'High',
-    STRONG: 'Strong',
-  };
-  return tiers[confidenceTier] || 'Low';
-}
-
-function computeProbabilityBand(signalLabel) {
-  const bands = {
-    STRONG_BUY: '70%-100%',
-    BUY: '58%-69%',
-    HOLD: '43%-57%',
-    SELL: '31%-42%',
-    STRONG_SELL: '0%-30%',
-  };
-  return bands[signalLabel] || '43%-57%';
-}
-
-function computeSignalDirection(signalLabel, probabilityValue) {
-  if (signalLabel === 'BUY' || signalLabel === 'STRONG_BUY') {
-    return 'BULLISH';
-  }
-
-  if (signalLabel === 'SELL' || signalLabel === 'STRONG_SELL') {
-    return 'BEARISH';
-  }
-
-  const probability = normalizeProbability(probabilityValue);
-  if (probability !== null && probability < 0.5) {
-    return 'BEARISH';
-  }
-
-  return 'BULLISH';
-}
-
-function computeSignalStrength(signalLabel, confidenceTier) {
-  if (signalLabel === 'HOLD') {
-    return 'WEAK';
-  }
-
-  if (confidenceTier === 'STRONG') {
-    return 'STRONG';
-  }
-
-  if (
-    (signalLabel === 'STRONG_BUY' || signalLabel === 'STRONG_SELL') &&
-    confidenceTier === 'HIGH'
-  ) {
-    return 'STRONG';
-  }
-
-  if (confidenceTier === 'HIGH' || confidenceTier === 'MODERATE') {
-    return 'MODERATE';
-  }
-
-  return 'WEAK';
-}
-
-function computeMarketCondition(trendSummary) {
-  const trendText = typeof trendSummary === 'string' ? trendSummary.toLowerCase() : '';
-  if (trendText.includes('uptrend')) {
-    return 'BULLISH';
-  }
-
-  if (trendText.includes('downtrend')) {
-    return 'BEARISH';
-  }
-
-  return 'NEUTRAL';
-}
-
-function computeRecommendation(signalLabel) {
-  if (signalLabel === 'STRONG_BUY') {
-    return 'BUY';
-  }
-
-  if (signalLabel === 'BUY') {
-    return 'BUY_BIAS';
-  }
-
-  if (signalLabel === 'SELL') {
-    return 'SELL_BIAS';
-  }
-
-  if (signalLabel === 'STRONG_SELL') {
-    return 'SELL';
-  }
-
-  return 'WAIT';
-}
-
-function computeSignalExplanation(signalLabel, signalStrength, signalDirection, confidenceTier) {
-  if (signalLabel === 'HOLD') {
-    return `Model probability is near neutral, so the current stance is hold with ${confidenceTier.toLowerCase()} conviction.`;
-  }
-
-  return `${signalStrength.toLowerCase()} ${signalDirection.toLowerCase()} signal in the ${formatSignalLabel(signalLabel)} category with ${confidenceTier.toLowerCase()} confidence.`;
-}
-
-async function normalizeAnalyzeSymbol(rawSymbol) {
-  try {
-    return await symbolsService.normalizeSymbol(rawSymbol);
-  } catch (error) {
-    console.warn(
-      `[analyze] symbol normalization failed for ${rawSymbol}: ${error?.message || 'unknown error'}`
-    );
-    return rawSymbol;
-  }
-}
-
-function mapAnalyzeResponse(symbol, predictionData, latestPrice) {
+function mapAnalyzeResponse(instrument, predictionData, latestPrice) {
   const context = predictionData && predictionData.context && typeof predictionData.context === 'object'
     ? predictionData.context
     : {};
@@ -209,48 +77,58 @@ function mapAnalyzeResponse(symbol, predictionData, latestPrice) {
         ? context.risk_summary
         : null;
   const rawProbability = normalizeProbability(predictionData?.probability);
-  const signalLabel = computeSignalLabel(rawProbability);
-  const confidenceTier = computeConfidenceTier(rawProbability);
-  const signalDirection = computeSignalDirection(signalLabel, rawProbability);
-  const signalStrength = computeSignalStrength(signalLabel, confidenceTier);
-  const marketCondition = computeMarketCondition(trendSummary);
-  const recommendation = computeRecommendation(signalLabel);
-  const signalExplanation = computeSignalExplanation(
-    signalLabel,
-    signalStrength,
-    signalDirection,
-    confidenceTier
-  );
-  const displayProbability = rawProbability === null ? null : Number(rawProbability.toFixed(2));
+  const displayProbability = rawProbability === null ? null : Number(rawProbability.toFixed(4));
+  const decision = typeof predictionData?.decision === 'string' ? predictionData.decision : 'NO_TRADE';
+  const setupSide =
+    typeof predictionData?.setup_side === 'string' ? predictionData.setup_side : null;
+  const confidenceLevel = titleCase(predictionData?.confidence_level) || 'Low';
+  const summary =
+    typeof predictionData?.summary === 'string'
+      ? predictionData.summary
+      : 'No intraday summary was returned by the Python engine.';
 
   return {
     ...predictionData,
-    symbol,
+    id: instrument.id,
+    symbol: instrument.normalized,
+    raw_symbol: instrument.symbol,
+    normalized: instrument.normalized,
+    display_name: instrument.display_name,
+    market: instrument.market,
+    exchange: instrument.exchange,
+    instrument_type: instrument.instrument_type,
+    country: instrument.country,
     probability: displayProbability,
-    raw_probability: predictionData?.probability,
     current_price: latestPrice.current_price,
     price_error: latestPrice.price_error,
     price_error_message: latestPrice.price_error ? latestPrice.price_error_message : null,
     trend_summary: trendSummary,
     risk_summary: riskSummary,
-    signal: signalLabel,
-    prediction_category: formatSignalLabel(signalLabel),
-    probability_band: computeProbabilityBand(signalLabel),
-    confidence_tier: formatConfidenceTier(confidenceTier),
+    signal: decision,
+    decision_label: titleCase(decision),
     model_confidence_level:
       typeof predictionData?.confidence_level === 'string' ? predictionData.confidence_level : null,
-    confidence_level: formatConfidenceTier(confidenceTier),
-    signal_direction: signalDirection,
-    signal_strength: signalStrength,
-    market_condition: marketCondition,
-    recommendation,
-    signal_explanation: signalExplanation,
+    confidence_level: confidenceLevel,
+    setup_side: setupSide,
+    trade_actionable: decision === 'LONG' || decision === 'SHORT',
+    signal_explanation: summary,
   };
 }
 
 router.post('/analyze', validateAnalyzeRequest, async (req, res) => {
   const requestStart = process.hrtime.bigint();
-  const normalizedSymbol = await normalizeAnalyzeSymbol(req.body.symbol);
+  let instrument;
+  try {
+    instrument = await resolveAnalyzeInstrument(req.body.symbol);
+  } catch (error) {
+    const status = error.status || 400;
+    return res.status(status).json({
+      error: error.message || 'Unable to resolve symbol',
+      matches: Array.isArray(error.matches) ? error.matches : undefined,
+    });
+  }
+
+  const normalizedSymbol = instrument.normalized;
   const cachePayload = {
     ...req.body,
     symbol: normalizedSymbol,
@@ -279,7 +157,7 @@ router.post('/analyze', validateAnalyzeRequest, async (req, res) => {
   try {
     const latestPrice = await callLatestPrice(normalizedSymbol);
     const predictionData = await callReasoning(normalizedSymbol);
-    const analysis = mapAnalyzeResponse(normalizedSymbol, predictionData, latestPrice);
+    const analysis = mapAnalyzeResponse(instrument, predictionData, latestPrice);
     const narratives = await aiExplainer.generateNarratives(analysis);
     const data = {
       ...analysis,
@@ -287,6 +165,16 @@ router.post('/analyze', validateAnalyzeRequest, async (req, res) => {
       market_insight: narratives.marketInsight,
       explanation_is_fallback: narratives.explanationIsFallback === true,
     };
+    try {
+      const recentEntry = buildRecentAnalysisEntry(data, instrument);
+      await recentAnalysisService.recordAnalysis(recentEntry);
+    } catch (persistError) {
+      console.warn(
+        `[analyze] unable to persist recent analysis for ${normalizedSymbol}: ${
+          persistError?.message || 'unknown error'
+        }`
+      );
+    }
     const pythonMs = elapsedMs(pythonStart);
     cache.set(cacheKey, data);
     const totalMs = elapsedMs(requestStart);
@@ -299,6 +187,51 @@ router.post('/analyze', validateAnalyzeRequest, async (req, res) => {
     const status = err.status || 502;
     const body = err.data || { error: err.message || 'Reasoning service error' };
     return res.status(status).json(body);
+  }
+});
+
+router.post('/analyze/validate', async (req, res) => {
+  try {
+    const instrument = await resolveAnalyzeInstrument(req.body?.symbol);
+    const validation = await callValidation(instrument.normalized, {
+      start_date: req.body?.start_date,
+      end_date: req.body?.end_date,
+      interval: req.body?.interval,
+      horizon: req.body?.horizon,
+    });
+
+    return res.status(200).json({
+      ...validation,
+      id: instrument.id,
+      symbol: instrument.normalized,
+      raw_symbol: instrument.symbol,
+      display_name: instrument.display_name,
+      market: instrument.market,
+      exchange: instrument.exchange,
+      instrument_type: instrument.instrument_type,
+      country: instrument.country,
+    });
+  } catch (error) {
+    const status =
+      typeof error?.status === 'number' && Number.isInteger(error.status) ? error.status : 500;
+    return res.status(status).json(error?.data || {
+      error: error?.message || 'Unable to run validation',
+      matches: Array.isArray(error?.matches) ? error.matches : undefined,
+    });
+  }
+});
+
+router.get('/analyze/recent', async (req, res) => {
+  try {
+    const limit = req.query?.limit;
+    const results = await recentAnalysisService.listRecentAnalyses(limit);
+    return res.status(200).json({ results });
+  } catch (error) {
+    const status =
+      typeof error?.status === 'number' && Number.isInteger(error.status) ? error.status : 500;
+    return res.status(status).json({
+      error: error?.message || 'Unable to load recent analyses',
+    });
   }
 });
 

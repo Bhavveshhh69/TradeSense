@@ -2,10 +2,13 @@ const request = require('supertest');
 
 jest.mock('../../portfolio/portfolio.service', () => ({
   addHolding: jest.fn(),
+  adjustPosition: jest.fn(),
+  createTrade: jest.fn(),
   getPortfolioAdvisor: jest.fn(),
   getPortfolioInsights: jest.fn(),
   getPortfolioHistory: jest.fn(),
   getHoldings: jest.fn(),
+  getTransactions: jest.fn(),
   deleteHolding: jest.fn(),
 }));
 
@@ -60,6 +63,83 @@ test('GET /api/portfolio returns holdings and summary', async () => {
 
   expect(response.status).toBe(200);
   expect(response.body).toEqual(payload);
+});
+
+test('POST /api/portfolio/trades stores a ledger trade and returns portfolio snapshot', async () => {
+  const trade = {
+    id: 'trade-1',
+    ticker: 'AAPL',
+    side: 'BUY',
+    quantity: 2,
+    price: 150,
+  };
+  const portfolio = {
+    holdings: [{ ticker: 'AAPL', quantity: 2, side: 'LONG' }],
+    summary: { total_portfolio_value: 24000 },
+  };
+  portfolioService.createTrade.mockResolvedValue(trade);
+  portfolioService.getHoldings.mockResolvedValue(portfolio);
+
+  const response = await request(app).post('/api/portfolio/trades').send({
+    ticker: 'AAPL',
+    side: 'BUY',
+    quantity: 2,
+    price: 150,
+  });
+
+  expect(response.status).toBe(201);
+  expect(response.body).toEqual({
+    success: true,
+    trade,
+    portfolio,
+  });
+  expect(portfolioService.createTrade).toHaveBeenCalledWith({
+    ticker: 'AAPL',
+    side: 'BUY',
+    quantity: 2,
+    price: 150,
+  });
+});
+
+test('GET /api/portfolio/transactions returns ledger history', async () => {
+  const payload = {
+    transactions: [{ id: 'trade-1', ticker: 'AAPL', signed_quantity: 2 }],
+    summary: { count: 1, base_currency: 'INR' },
+  };
+  portfolioService.getTransactions.mockResolvedValue(payload);
+
+  const response = await request(app).get('/api/portfolio/transactions');
+
+  expect(response.status).toBe(200);
+  expect(response.body).toEqual(payload);
+});
+
+test('POST /api/portfolio/positions/:symbol/adjust creates explicit adjustment trades', async () => {
+  const trades = [
+    { id: 'sell-1', ticker: 'AAPL', side: 'SELL', quantity: 5 },
+    { id: 'short-1', ticker: 'AAPL', side: 'SHORT', quantity: 2 },
+  ];
+  const portfolio = {
+    holdings: [{ ticker: 'AAPL', quantity: 2, side: 'SHORT' }],
+    summary: { total_portfolio_value: 19200 },
+  };
+  portfolioService.adjustPosition.mockResolvedValue(trades);
+  portfolioService.getHoldings.mockResolvedValue(portfolio);
+
+  const response = await request(app)
+    .post('/api/portfolio/positions/AAPL/adjust')
+    .send({ target_quantity: -2, price: 120 });
+
+  expect(response.status).toBe(201);
+  expect(response.body).toEqual({
+    success: true,
+    trades,
+    portfolio,
+  });
+  expect(portfolioService.adjustPosition).toHaveBeenCalledWith('AAPL', {
+    target_quantity: -2,
+    price: 120,
+  });
 });
 
 test('GET /api/portfolio/history returns equity curve payload', async () => {

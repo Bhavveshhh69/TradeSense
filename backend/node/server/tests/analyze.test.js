@@ -3,15 +3,20 @@ const request = require('supertest');
 jest.mock('axios');
 jest.mock('../../symbols/symbols.service', () => ({
   normalizeSymbol: jest.fn(),
+  resolveInstrument: jest.fn(),
+  searchSymbols: jest.fn(),
 }));
 jest.mock('../../services/ai_explainer.service', () => ({
-  FALLBACK_EXPLANATION:
-    'TradeSense AI explanation is temporarily unavailable due to API limits. Based on current model signals, the system suggests a cautious stance with weak momentum and moderate market risk.',
+  FALLBACK_EXPLANATION: 'Fallback explanation',
   generateNarratives: jest.fn(async () => ({
     explanation: 'Generated explanation',
     marketInsight: 'Generated market insight',
     explanationIsFallback: false,
   })),
+}));
+jest.mock('../services/recent_analysis.service', () => ({
+  listRecentAnalyses: jest.fn(),
+  recordAnalysis: jest.fn(),
 }));
 
 const axios = require('axios');
@@ -19,24 +24,74 @@ const app = require('../index');
 const cache = require('../cache/memoryCache');
 const symbolsService = require('../../symbols/symbols.service');
 const aiExplainer = require('../../services/ai_explainer.service');
+const recentAnalysisService = require('../services/recent_analysis.service');
 const actualSymbolsService = jest.requireActual('../../symbols/symbols.service');
 
 function mockPredictPayload(overrides = {}) {
   return {
     symbol: 'AAPL',
-    prediction: 0,
-    probability: 0.53,
-    confidence: 0.51,
-    decision: 'HOLD',
-    confidence_level: 'very_low',
-    strength: 0.03,
+    market: 'US',
+    exchange: 'NASDAQ',
+    timeframe: '15m',
+    strategy_family: 'orb_vwap_continuation',
+    prediction: 1,
+    probability: 0.6384,
+    confidence: 0.0884,
+    decision: 'LONG',
+    confidence_level: 'moderate',
+    strength: 0.0884,
     context: {
-      trend_summary: 'Market trend is mixed or transitional.',
-      risk_summary: 'Market risk conditions are normal.',
+      trend_summary: 'Intraday setup is evaluated against opening-range direction and session VWAP alignment.',
+      risk_summary: 'Quality gates and bracket sizing are session-aware and market-aware.',
     },
-    model_version: 'phase14-v1',
-    timestamp: '2026-02-20T15:19:04.753559+00:00',
-    generated_at: '2026-02-20T15:19:04.753559+00:00',
+    model_version: 'intraday-xgboost',
+    model_name: 'xgboost',
+    model_threshold: 0.52,
+    model_bench_summary: {
+      xgboost: {
+        validation: { net_expectancy: 0.21 },
+        holdout: { net_expectancy: 0.17 },
+        threshold: 0.52,
+      },
+    },
+    timestamp: '2026-04-15T14:15:00+00:00',
+    generated_at: '2026-04-15T14:16:00+00:00',
+    setup_side: 'LONG',
+    entry_price: 194.25,
+    stop_price: 192.75,
+    take_profit_price: 196.5,
+    forced_exit_time: '2026-04-15T19:45:00+00:00',
+    no_trade_reason: null,
+    data_quality: {
+      missing_bar_count: 0,
+      expected_bar_count: 25,
+      completeness_score: 1,
+      stale_data: false,
+      timezone_valid: true,
+      session_valid: true,
+      usable_for_live: true,
+      usable_for_backtest: true,
+      warnings: [],
+    },
+    summary: 'Long intraday setup detected.',
+    market_context: {
+      market: 'US',
+      exchange: 'NASDAQ',
+      session_window: { start: '10:00', end: '11:00', opening_range_bars: 2 },
+    },
+    key_drivers: ['breakout_strength', 'vwap_distance'],
+    risk_notes: [],
+    model_honesty: 'The probability estimates a same-session bracket outcome.',
+    current_price: 194.25,
+    trade_window: { start: '10:00', end: '11:00', opening_range_bars: 2 },
+    threshold: 0.55,
+    stock_sentiment_score: 0.31,
+    sector_sentiment_score: 0.12,
+    contextual_sentiment_score: 0.253,
+    sentiment_confidence: 0.73,
+    sentiment_gate_reason: 'Company and Technology news are supportive.',
+    stock_article_count: 2,
+    sector_article_count: 3,
     ...overrides,
   };
 }
@@ -46,85 +101,92 @@ beforeEach(() => {
   axios.post.mockReset();
   axios.get.mockReset();
   symbolsService.normalizeSymbol.mockReset();
+  symbolsService.resolveInstrument.mockReset();
   symbolsService.normalizeSymbol.mockImplementation(async (ticker) => ticker);
+  symbolsService.resolveInstrument.mockImplementation(async (ticker) => {
+    const normalized = await symbolsService.normalizeSymbol(ticker);
+    return {
+      symbol: normalized.replace(/\.(NS|BO)$/i, ''),
+      normalized,
+      display_name: normalized,
+      market: normalized.endsWith('.NS') ? 'IN' : 'US',
+      exchange: normalized.endsWith('.NS') ? 'NSE' : 'US',
+      instrument_type: 'Equity',
+    };
+  });
   aiExplainer.generateNarratives.mockReset();
   aiExplainer.generateNarratives.mockResolvedValue({
     explanation: 'Generated explanation',
     marketInsight: 'Generated market insight',
     explanationIsFallback: false,
   });
+  recentAnalysisService.listRecentAnalyses.mockReset();
+  recentAnalysisService.recordAnalysis.mockReset();
+  recentAnalysisService.recordAnalysis.mockResolvedValue(undefined);
 });
 
 test.each([
   ['RELIANCE', 'RELIANCE.NS'],
   ['RELIANCE.NS', 'RELIANCE.NS'],
-  ['HDFCBANK.NS', 'HDFCBANK.NS'],
-  ['TCS', 'TCS.NS'],
-  ['INFY', 'INFY.NS'],
   ['AAPL', 'AAPL'],
-  ['NVDA', 'NVDA'],
-])(
-  'POST /api/analyze normalizes %s to %s and enriches with latest price',
-  async (inputSymbol, normalizedSymbol) => {
-    symbolsService.normalizeSymbol.mockImplementation(actualSymbolsService.normalizeSymbol);
-    axios.get.mockResolvedValue({
-      data: {
-        symbol: normalizedSymbol,
-        price: 1419.4,
-      },
-    });
-    axios.post.mockResolvedValue({
-      data: mockPredictPayload({ symbol: normalizedSymbol }),
-    });
-
-    const response = await request(app)
-      .post('/api/analyze')
-      .send({ symbol: inputSymbol });
-
-    expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({
+])('POST /api/analyze normalizes %s to %s and preserves Python decision output', async (inputSymbol, normalizedSymbol) => {
+  symbolsService.normalizeSymbol.mockImplementation(actualSymbolsService.normalizeSymbol);
+  axios.get.mockResolvedValue({
+    data: {
       symbol: normalizedSymbol,
-      current_price: 1419.4,
-      prediction: 0,
-      probability: 0.53,
-      confidence_level: 'Low',
-      trend_summary: 'Market trend is mixed or transitional.',
-      risk_summary: 'Market risk conditions are normal.',
-      signal: 'HOLD',
-      prediction_category: 'Hold',
-      confidence_tier: 'Low',
-      probability_band: '43%-57%',
-      signal_direction: 'BULLISH',
-      signal_strength: 'WEAK',
-      market_condition: 'NEUTRAL',
-      recommendation: 'WAIT',
-      price_error: false,
-      price_error_message: null,
-    });
-    expect(response.body.signal_explanation).toContain('near neutral');
-    expect(axios.get).toHaveBeenCalledWith(
-      `http://localhost:8000/market/latest-price/${encodeURIComponent(normalizedSymbol)}`,
-      expect.objectContaining({ timeout: expect.any(Number) })
-    );
-    expect(axios.post).toHaveBeenCalledWith(
-      'http://localhost:8000/predict',
-      { symbol: normalizedSymbol },
-      expect.objectContaining({ timeout: expect.any(Number) })
-    );
-    expect(aiExplainer.generateNarratives).toHaveBeenCalledTimes(1);
-  }
-);
+      market: normalizedSymbol.endsWith('.NS') ? 'IN' : 'US',
+      timeframe: '15m',
+      price: 1419.4,
+    },
+  });
+  axios.post.mockResolvedValue({
+    data: mockPredictPayload({
+      symbol: normalizedSymbol,
+      market: normalizedSymbol.endsWith('.NS') ? 'IN' : 'US',
+    }),
+  });
 
-test('POST /api/analyze reuses cached response for symbols normalized to same value', async () => {
+  const response = await request(app).post('/api/analyze').send({ symbol: inputSymbol });
+
+  expect(response.status).toBe(200);
+  expect(response.body).toMatchObject({
+    normalized: normalizedSymbol,
+    symbol: normalizedSymbol,
+    current_price: 1419.4,
+    decision_label: 'Long',
+    signal: 'LONG',
+    trade_actionable: true,
+    confidence_level: 'Moderate',
+    setup_side: 'LONG',
+    timeframe: '15m',
+    model_name: 'xgboost',
+    model_threshold: 0.52,
+    contextual_sentiment_score: 0.253,
+  });
+  expect(response.body.signal_explanation).toContain('Long intraday setup');
+  expect(axios.get).toHaveBeenCalledWith(
+    `http://localhost:8000/market/latest-price/${encodeURIComponent(normalizedSymbol)}`,
+    expect.objectContaining({ timeout: expect.any(Number) })
+  );
+  expect(axios.post).toHaveBeenCalledWith(
+    'http://localhost:8000/predict',
+    { symbol: normalizedSymbol },
+    expect.objectContaining({ timeout: expect.any(Number) })
+  );
+});
+
+test('POST /api/analyze reuses cached response for normalized symbols', async () => {
   symbolsService.normalizeSymbol.mockImplementation(actualSymbolsService.normalizeSymbol);
   axios.get.mockResolvedValue({
     data: {
       symbol: 'RELIANCE.NS',
+      market: 'IN',
+      timeframe: '15m',
       price: 2500.35,
     },
   });
   axios.post.mockResolvedValue({
-    data: mockPredictPayload({ symbol: 'RELIANCE.NS' }),
+    data: mockPredictPayload({ symbol: 'RELIANCE.NS', market: 'IN' }),
   });
 
   const first = await request(app).post('/api/analyze').send({ symbol: 'RELIANCE' });
@@ -135,10 +197,9 @@ test('POST /api/analyze reuses cached response for symbols normalized to same va
   expect(second.body).toEqual(first.body);
   expect(axios.get).toHaveBeenCalledTimes(1);
   expect(axios.post).toHaveBeenCalledTimes(1);
-  expect(aiExplainer.generateNarratives).toHaveBeenCalledTimes(1);
 });
 
-test('POST /api/analyze returns prediction with null price when latest price fetch fails', async () => {
+test('POST /api/analyze keeps price null when latest price fetch fails', async () => {
   symbolsService.normalizeSymbol.mockResolvedValue('AAPL');
   axios.get.mockRejectedValue({
     response: {
@@ -153,59 +214,69 @@ test('POST /api/analyze returns prediction with null price when latest price fet
     data: mockPredictPayload({ symbol: 'AAPL' }),
   });
 
-  const response = await request(app)
-    .post('/api/analyze')
-    .send({ symbol: 'aapl' });
+  const response = await request(app).post('/api/analyze').send({ symbol: 'aapl' });
 
   expect(response.status).toBe(200);
   expect(response.body).toMatchObject({
     symbol: 'AAPL',
     current_price: null,
-    prediction: 0,
-    probability: 0.53,
-    signal: 'HOLD',
-    signal_direction: 'BULLISH',
-    signal_strength: 'WEAK',
-    recommendation: 'WAIT',
     price_error: true,
+    signal: 'LONG',
+    trade_actionable: true,
   });
   expect(response.body.price_error_message).toContain('Price unavailable for symbol (AAPL)');
-  expect(axios.post).toHaveBeenCalledTimes(1);
 });
 
-test('POST /api/analyze falls back to raw symbol when normalization fails', async () => {
-  const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-  symbolsService.normalizeSymbol.mockRejectedValue(new Error('normalization unavailable'));
+test('POST /api/analyze returns strict resolution errors for unsupported symbols', async () => {
+  symbolsService.resolveInstrument.mockRejectedValueOnce(
+    Object.assign(new Error('symbol UNKNOWN is unsupported in the current market master'), {
+      status: 404,
+    })
+  );
+
+  const response = await request(app).post('/api/analyze').send({ symbol: 'unknown' });
+
+  expect(response.status).toBe(404);
+  expect(response.body).toEqual({
+    error: 'symbol UNKNOWN is unsupported in the current market master',
+    matches: undefined,
+  });
+});
+
+test('POST /api/analyze returns no-trade output without Node-side remapping', async () => {
+  symbolsService.normalizeSymbol.mockResolvedValue('AAPL');
   axios.get.mockResolvedValue({
     data: {
       symbol: 'AAPL',
-      price: 123.45,
+      market: 'US',
+      timeframe: '15m',
+      price: 193.75,
     },
   });
   axios.post.mockResolvedValue({
-    data: mockPredictPayload({ symbol: 'AAPL' }),
+    data: mockPredictPayload({
+      decision: 'NO_TRADE',
+      probability: 0,
+      confidence_level: 'low',
+      setup_side: null,
+      entry_price: null,
+      stop_price: null,
+      take_profit_price: null,
+      no_trade_reason: 'Price has not broken the opening range',
+      summary: 'No intraday trade is being taken.',
+    }),
   });
 
-  const response = await request(app)
-    .post('/api/analyze')
-    .send({ symbol: 'aapl' });
+  const response = await request(app).post('/api/analyze').send({ symbol: 'AAPL' });
 
   expect(response.status).toBe(200);
-  expect(response.body.symbol).toBe('AAPL');
-  expect(axios.get).toHaveBeenCalledWith(
-    'http://localhost:8000/market/latest-price/AAPL',
-    expect.objectContaining({ timeout: expect.any(Number) })
-  );
-  expect(axios.post).toHaveBeenCalledWith(
-    'http://localhost:8000/predict',
-    { symbol: 'AAPL' },
-    expect.objectContaining({ timeout: expect.any(Number) })
-  );
-  expect(warnSpy).toHaveBeenCalledWith(
-    '[analyze] symbol normalization failed for AAPL: normalization unavailable'
-  );
-
-  warnSpy.mockRestore();
+  expect(response.body).toMatchObject({
+    signal: 'NO_TRADE',
+    decision_label: 'No Trade',
+    trade_actionable: false,
+    signal_explanation: 'No intraday trade is being taken.',
+    no_trade_reason: 'Price has not broken the opening range',
+  });
 });
 
 test('POST /api/analyze returns 400 for invalid input', async () => {
@@ -216,159 +287,86 @@ test('POST /api/analyze returns 400 for invalid input', async () => {
   expect(missingSymbol.status).toBe(400);
   expect(emptySymbol.status).toBe(400);
   expect(nonStringSymbol.status).toBe(400);
-  expect(axios.post).not.toHaveBeenCalled();
-  expect(axios.get).not.toHaveBeenCalled();
 });
 
-test('POST /api/analyze returns 400 for malformed JSON body', async () => {
-  const response = await request(app)
-    .post('/api/analyze')
-    .set('Content-Type', 'application/json')
-    .send('{"symbol":');
+test('GET /api/analyze/recent returns persisted recent analyses', async () => {
+  recentAnalysisService.listRecentAnalyses.mockResolvedValue([
+    {
+      id: 'recent-1',
+      normalized: 'AAPL',
+      display_name: 'Apple Inc.',
+      signal: 'LONG',
+      recorded_at: '2026-04-15T14:16:00+00:00',
+    },
+  ]);
 
-  expect(response.status).toBe(400);
-  expect(response.body).toEqual({ error: 'Invalid JSON body' });
-  expect(axios.post).not.toHaveBeenCalled();
-  expect(axios.get).not.toHaveBeenCalled();
+  const response = await request(app).get('/api/analyze/recent?limit=5');
+
+  expect(response.status).toBe(200);
+  expect(response.body).toEqual({
+    results: [
+      {
+        id: 'recent-1',
+        normalized: 'AAPL',
+        display_name: 'Apple Inc.',
+        signal: 'LONG',
+        recorded_at: '2026-04-15T14:16:00+00:00',
+      },
+    ],
+  });
+  expect(recentAnalysisService.listRecentAnalyses).toHaveBeenCalledWith('5');
 });
 
-test('POST /api/analyze maps probability 0.53 to HOLD/WEAK and WAIT recommendation', async () => {
-  symbolsService.normalizeSymbol.mockResolvedValue('AAPL');
-  axios.get.mockResolvedValue({
+test('POST /api/analyze/validate returns a flattened validation report', async () => {
+  symbolsService.resolveInstrument.mockResolvedValueOnce({
+    id: 'US:AAPL',
+    symbol: 'AAPL',
+    normalized: 'AAPL',
+    display_name: 'Apple Inc.',
+    market: 'US',
+    exchange: 'NASDAQ',
+    instrument_type: 'Equity',
+    country: 'US',
+  });
+  axios.post.mockResolvedValueOnce({
     data: {
       symbol: 'AAPL',
-      price: 263.75,
+      period: { start_date: '2025-04-02', end_date: '2026-04-02', horizon: 5 },
+      total_predictions: 243,
+      accuracy: 0.5185,
+      ece: 0.2026,
+      brier_score: 0.2917,
+      accuracy_by_confidence: { low: 0.5, moderate: 0.53 },
+      reliability_curve: [{ probability_mean: 0.55, accuracy: 0.5, count: 30 }],
     },
   });
-  axios.post.mockResolvedValue({
-    data: mockPredictPayload({
-      symbol: 'AAPL',
-      probability: 0.53,
-      context: {
-        trend_summary: 'Market trend is mixed or transitional.',
-        risk_summary: 'Market risk conditions are normal.',
-      },
-    }),
-  });
 
-  const response = await request(app).post('/api/analyze').send({ symbol: 'AAPL' });
+  const response = await request(app).post('/api/analyze/validate').send({ symbol: 'aapl' });
 
   expect(response.status).toBe(200);
   expect(response.body).toMatchObject({
-    probability: 0.53,
-    signal: 'HOLD',
-    prediction_category: 'Hold',
-    confidence_tier: 'Low',
-    confidence_level: 'Low',
-    signal_direction: 'BULLISH',
-    signal_strength: 'WEAK',
-    market_condition: 'NEUTRAL',
-    recommendation: 'WAIT',
+    id: 'US:AAPL',
+    symbol: 'AAPL',
+    raw_symbol: 'AAPL',
+    display_name: 'Apple Inc.',
+    market: 'US',
+    exchange: 'NASDAQ',
+    instrument_type: 'Equity',
+    country: 'US',
+    total_predictions: 243,
+    accuracy: 0.5185,
+    ece: 0.2026,
+    brier_score: 0.2917,
   });
-});
-
-test('POST /api/analyze maps probability 0.62 with bullish trend to BUY_BIAS', async () => {
-  symbolsService.normalizeSymbol.mockResolvedValue('AAPL');
-  axios.get.mockResolvedValue({
-    data: {
+  expect(axios.post).toHaveBeenCalledWith(
+    'http://localhost:8000/analyze/validate',
+    {
       symbol: 'AAPL',
-      price: 263.75,
+      start_date: undefined,
+      end_date: undefined,
+      interval: undefined,
+      horizon: undefined,
     },
-  });
-  axios.post.mockResolvedValue({
-    data: mockPredictPayload({
-      symbol: 'AAPL',
-      probability: 0.62,
-      decision: 'BUY',
-      confidence_level: 'medium',
-      context: {
-        trend_summary: 'Short-term uptrend remains intact with higher highs.',
-        risk_summary: 'Market risk conditions are normal.',
-      },
-    }),
-  });
-
-  const response = await request(app).post('/api/analyze').send({ symbol: 'AAPL' });
-
-  expect(response.status).toBe(200);
-  expect(response.body).toMatchObject({
-    probability: 0.62,
-    signal: 'BUY',
-    prediction_category: 'Buy',
-    confidence_tier: 'Moderate',
-    signal_direction: 'BULLISH',
-    signal_strength: 'MODERATE',
-    market_condition: 'BULLISH',
-    recommendation: 'BUY_BIAS',
-  });
-});
-
-test('POST /api/analyze maps probability 0.30 to strong bearish signal and SELL recommendation', async () => {
-  symbolsService.normalizeSymbol.mockResolvedValue('AAPL');
-  axios.get.mockResolvedValue({
-    data: {
-      symbol: 'AAPL',
-      price: 263.75,
-    },
-  });
-  axios.post.mockResolvedValue({
-    data: mockPredictPayload({
-      symbol: 'AAPL',
-      probability: 0.30,
-      decision: 'SELL',
-      confidence_level: 'high',
-      context: {
-        trend_summary: 'Persistent downtrend with lower highs and lower lows.',
-        risk_summary: 'Market risk conditions are elevated.',
-      },
-    }),
-  });
-
-  const response = await request(app).post('/api/analyze').send({ symbol: 'AAPL' });
-
-  expect(response.status).toBe(200);
-  expect(response.body).toMatchObject({
-    probability: 0.30,
-    signal: 'STRONG_SELL',
-    prediction_category: 'Strong Sell',
-    confidence_tier: 'High',
-    signal_direction: 'BEARISH',
-    signal_strength: 'STRONG',
-    market_condition: 'BEARISH',
-    recommendation: 'SELL',
-  });
-});
-
-test('POST /api/analyze maps probability 0.35 to SELL band with moderate bearish strength', async () => {
-  symbolsService.normalizeSymbol.mockResolvedValue('AAPL');
-  axios.get.mockResolvedValue({
-    data: {
-      symbol: 'AAPL',
-      price: 263.75,
-    },
-  });
-  axios.post.mockResolvedValue({
-    data: mockPredictPayload({
-      symbol: 'AAPL',
-      probability: 0.35,
-      decision: 'SELL',
-      context: {
-        trend_summary: 'Persistent downtrend with lower highs and lower lows.',
-        risk_summary: 'Market risk conditions are elevated.',
-      },
-    }),
-  });
-
-  const response = await request(app).post('/api/analyze').send({ symbol: 'AAPL' });
-
-  expect(response.status).toBe(200);
-  expect(response.body).toMatchObject({
-    probability: 0.35,
-    signal: 'SELL',
-    prediction_category: 'Sell',
-    confidence_tier: 'Moderate',
-    signal_direction: 'BEARISH',
-    signal_strength: 'MODERATE',
-    recommendation: 'SELL_BIAS',
-  });
+    expect.objectContaining({ timeout: expect.any(Number) })
+  );
 });

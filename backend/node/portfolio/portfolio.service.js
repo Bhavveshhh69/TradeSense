@@ -2,8 +2,10 @@ const axios = require('axios');
 
 const repository = require('./portfolio.repository');
 const {
+  buildTrade,
   buildHolding,
   createHttpError,
+  normalizeTradeSide,
   normalizeTicker,
   resolveInstrumentMetadata,
 } = require('./portfolio.model');
@@ -50,6 +52,19 @@ function getBaseCurrency() {
   return normalizeCurrencyCode(process.env.PORTFOLIO_BASE_CURRENCY, DEFAULT_BASE_CURRENCY);
 }
 
+function normalizeHistoryDays(daysInput) {
+  if (daysInput === undefined || daysInput === null || daysInput === '') {
+    return DEFAULT_HISTORY_DAYS;
+  }
+
+  const parsed = Number(daysInput);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw createHttpError(400, 'days must be a positive integer');
+  }
+
+  return Math.min(parsed, MAX_HISTORY_DAYS);
+}
+
 function extractFxErrorMessage(error, fromCurrency, toCurrency) {
   const pairLabel = `${fromCurrency}->${toCurrency}`;
 
@@ -70,19 +85,6 @@ function normalizeProviderBaseUrl() {
   }
 
   return PYTHON_API_BASE_URL;
-}
-
-function normalizeHistoryDays(daysInput) {
-  if (daysInput === undefined || daysInput === null || daysInput === '') {
-    return DEFAULT_HISTORY_DAYS;
-  }
-
-  const parsed = Number(daysInput);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw createHttpError(400, 'days must be a positive integer');
-  }
-
-  return Math.min(parsed, MAX_HISTORY_DAYS);
 }
 
 function extractPriceErrorMessage(error, symbol) {
@@ -205,7 +207,6 @@ function clearCachedSymbolPrices() {
 async function fetchLatestPriceWithCache(symbol) {
   const cachedPrice = readCachedSymbolPrice(symbol);
   if (cachedPrice !== null) {
-    console.log(`[price-cache] symbol=${symbol} source=cache`);
     return {
       requested_symbol: symbol,
       response_symbol: symbol,
@@ -215,7 +216,6 @@ async function fetchLatestPriceWithCache(symbol) {
     };
   }
 
-  console.log(`[price-cache] symbol=${symbol} source=live`);
   const latestPrice = await fetchLatestPrice(symbol);
 
   if (!latestPrice?.error) {
@@ -228,7 +228,7 @@ async function fetchLatestPriceWithCache(symbol) {
   return latestPrice;
 }
 
-async function normalizeHoldingTicker(rawTicker) {
+async function normalizePortfolioTicker(rawTicker) {
   try {
     const resolvedSymbol = await symbolsService.normalizeSymbol(rawTicker);
     return normalizeTicker(resolvedSymbol);
@@ -263,7 +263,9 @@ function formatUtcDate(date) {
 
 function buildHistoryDateRange(days) {
   const todayUtc = new Date();
-  const end = new Date(Date.UTC(todayUtc.getUTCFullYear(), todayUtc.getUTCMonth(), todayUtc.getUTCDate()));
+  const end = new Date(
+    Date.UTC(todayUtc.getUTCFullYear(), todayUtc.getUTCMonth(), todayUtc.getUTCDate())
+  );
   const dates = [];
 
   for (let offset = days - 1; offset >= 0; offset -= 1) {
@@ -335,64 +337,6 @@ async function fetchHistoricalPrices(symbol, days) {
       error_message: extractHistoryErrorMessage(error, requestSymbol),
     };
   }
-}
-
-function groupHoldingsBySymbol(holdings) {
-  const grouped = new Map();
-
-  for (const holding of holdings) {
-    const key = holding.ticker;
-    const shares = Number(holding.shares);
-    if (!Number.isFinite(shares) || shares <= 0) {
-      continue;
-    }
-
-    const previousShares = grouped.get(key) || 0;
-    grouped.set(key, previousShares + shares);
-  }
-
-  return grouped;
-}
-
-function buildEquityCurve(dates, symbolSharesMap, symbolHistoryMap, symbolFxRateMap) {
-  const symbolStates = new Map();
-
-  for (const [symbol, prices] of symbolHistoryMap.entries()) {
-    symbolStates.set(symbol, {
-      index: 0,
-      lastKnownPrice: null,
-      prices,
-    });
-  }
-
-  return dates.map((date) => {
-    let portfolioValue = 0;
-
-    for (const [symbol, shares] of symbolSharesMap.entries()) {
-      const state = symbolStates.get(symbol);
-      if (!state || !Array.isArray(state.prices) || state.prices.length === 0) {
-        continue;
-      }
-      const fxRateToBase = Number(symbolFxRateMap.get(symbol) || 0);
-      if (!Number.isFinite(fxRateToBase) || fxRateToBase <= 0) {
-        continue;
-      }
-
-      while (state.index < state.prices.length && state.prices[state.index].date <= date) {
-        state.lastKnownPrice = state.prices[state.index].close;
-        state.index += 1;
-      }
-
-      if (typeof state.lastKnownPrice === 'number' && Number.isFinite(state.lastKnownPrice)) {
-        portfolioValue += shares * state.lastKnownPrice * fxRateToBase;
-      }
-    }
-
-    return {
-      date,
-      portfolio_value: roundMoney(portfolioValue),
-    };
-  });
 }
 
 function classifyConcentrationRisk(largestWeight) {
@@ -508,198 +452,521 @@ function generatePortfolioRecommendations(metrics) {
   return { recommendations };
 }
 
-async function calculateMetrics(holdings) {
-  const baseCurrency = getBaseCurrency();
+function sortTradesChronologically(trades) {
+  return [...trades].sort((left, right) => {
+    const dateCompare = String(left.occurred_at || '').localeCompare(String(right.occurred_at || ''));
+    if (dateCompare !== 0) {
+      return dateCompare;
+    }
+    return String(left.id || '').localeCompare(String(right.id || ''));
+  });
+}
 
-  if (!Array.isArray(holdings) || holdings.length === 0) {
-    const emptyPortfolioPayload = {
+function signedQuantityDelta(side, quantity) {
+  return side === 'BUY' || side === 'COVER' ? quantity : -quantity;
+}
+
+function createPositionState(seed) {
+  return {
+    ticker: seed.ticker,
+    symbol: seed.symbol || seed.ticker,
+    display_name: seed.display_name || seed.ticker,
+    market: seed.market || null,
+    exchange: seed.exchange || null,
+    instrument_type: seed.instrument_type || null,
+    instrument_currency: seed.instrument_currency || resolveInstrumentMetadata(seed.ticker).instrument_currency,
+    quantity_signed: 0,
+    average_price: 0,
+    realized_pnl_native: 0,
+    last_trade_at: null,
+  };
+}
+
+function applyTradeToPositionState(state, trade, options = {}) {
+  const validate = options.validate === true;
+  const quantity = Number(trade.quantity);
+  const price = Number(trade.price);
+  const side = normalizeTradeSide(trade.side);
+
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    throw createHttpError(400, 'quantity must be a positive number');
+  }
+  if (!Number.isFinite(price) || price <= 0) {
+    throw createHttpError(400, 'price must be a positive number');
+  }
+
+  if (side === 'BUY') {
+    if (validate && state.quantity_signed < 0) {
+      throw createHttpError(400, 'Use COVER to reduce an existing short position');
+    }
+
+    const existingQuantity = Math.max(state.quantity_signed, 0);
+    const totalQuantity = existingQuantity + quantity;
+    state.average_price =
+      existingQuantity <= 0
+        ? price
+        : ((state.average_price * existingQuantity) + price * quantity) / totalQuantity;
+    state.quantity_signed = existingQuantity + quantity;
+  }
+
+  if (side === 'SELL') {
+    if (validate && state.quantity_signed <= 0) {
+      throw createHttpError(400, 'Use SHORT to open a new short position');
+    }
+    if (validate && quantity > state.quantity_signed) {
+      throw createHttpError(400, 'SELL quantity exceeds the current long position');
+    }
+
+    const closingQuantity = Math.min(quantity, Math.max(state.quantity_signed, 0));
+    state.realized_pnl_native += (price - state.average_price) * closingQuantity;
+    state.quantity_signed -= closingQuantity;
+    if (state.quantity_signed === 0) {
+      state.average_price = 0;
+    }
+  }
+
+  if (side === 'SHORT') {
+    if (validate && state.quantity_signed > 0) {
+      throw createHttpError(400, 'Use SELL to reduce an existing long position');
+    }
+
+    const existingQuantity = Math.abs(Math.min(state.quantity_signed, 0));
+    const totalQuantity = existingQuantity + quantity;
+    state.average_price =
+      existingQuantity <= 0
+        ? price
+        : ((state.average_price * existingQuantity) + price * quantity) / totalQuantity;
+    state.quantity_signed = -(existingQuantity + quantity);
+  }
+
+  if (side === 'COVER') {
+    if (validate && state.quantity_signed >= 0) {
+      throw createHttpError(400, 'Use BUY to open a new long position');
+    }
+    if (validate && quantity > Math.abs(state.quantity_signed)) {
+      throw createHttpError(400, 'COVER quantity exceeds the current short position');
+    }
+
+    const closingQuantity = Math.min(quantity, Math.abs(Math.min(state.quantity_signed, 0)));
+    state.realized_pnl_native += (state.average_price - price) * closingQuantity;
+    state.quantity_signed += closingQuantity;
+    if (state.quantity_signed === 0) {
+      state.average_price = 0;
+    }
+  }
+
+  state.average_price = Number.isFinite(state.average_price) ? roundMetric(state.average_price, 6) : 0;
+  state.realized_pnl_native = roundMoney(state.realized_pnl_native);
+  state.last_trade_at = trade.occurred_at;
+}
+
+function derivePositionStates(trades) {
+  const states = new Map();
+
+  for (const trade of sortTradesChronologically(trades)) {
+    const ticker = normalizeTicker(trade.ticker);
+    const existingState = states.get(ticker) || createPositionState(trade);
+    existingState.symbol = trade.symbol || existingState.symbol;
+    existingState.display_name = trade.display_name || existingState.display_name;
+    existingState.market = trade.market || existingState.market;
+    existingState.exchange = trade.exchange || existingState.exchange;
+    existingState.instrument_type = trade.instrument_type || existingState.instrument_type;
+    existingState.instrument_currency =
+      trade.instrument_currency || existingState.instrument_currency;
+    applyTradeToPositionState(existingState, trade, { validate: false });
+    states.set(ticker, existingState);
+  }
+
+  return states;
+}
+
+function buildQuantityTimeline(dates, tradesForSymbol) {
+  const timeline = [];
+  const sortedTrades = sortTradesChronologically(tradesForSymbol);
+  let signedQuantity = 0;
+  let tradeIndex = 0;
+
+  for (const date of dates) {
+    while (tradeIndex < sortedTrades.length) {
+      const trade = sortedTrades[tradeIndex];
+      const tradeDate = String(trade.occurred_at || '').slice(0, 10);
+      if (!tradeDate || tradeDate > date) {
+        break;
+      }
+      signedQuantity += signedQuantityDelta(trade.side, Number(trade.quantity));
+      tradeIndex += 1;
+    }
+    timeline.push(signedQuantity);
+  }
+
+  return timeline;
+}
+
+async function buildTradeFromInput(input, options = {}) {
+  const payload = input || {};
+  const rawTicker = payload.ticker ?? payload.symbol ?? payload.normalized;
+  if (typeof rawTicker !== 'string' || !rawTicker.trim()) {
+    throw createHttpError(400, 'ticker is required');
+  }
+
+  let instrument;
+  if (typeof symbolsService.resolveInstrument === 'function') {
+    instrument = await symbolsService.resolveInstrument(rawTicker);
+  } else {
+    const normalized = await normalizePortfolioTicker(rawTicker);
+    const metadata = resolveInstrumentMetadata(normalized);
+    instrument = {
+      symbol: normalized.replace(/\.(NS|BO)$/i, ''),
+      normalized,
+      display_name: normalized,
+      market: metadata.market,
+      exchange: metadata.exchange,
+      instrument_type: metadata.instrument_type,
+    };
+  }
+  const side = normalizeTradeSide(options.sideOverride || payload.side);
+
+  return buildTrade({
+    ...payload,
+    ticker: instrument.normalized,
+    symbol: instrument.symbol,
+    normalized: instrument.normalized,
+    display_name: instrument.display_name,
+    market: instrument.market,
+    exchange: instrument.exchange,
+    instrument_type: instrument.instrument_type,
+    instrument_currency: resolveInstrumentMetadata(instrument.normalized).instrument_currency,
+    side,
+  });
+}
+
+async function migrateLegacyHoldingsToTrades() {
+  const existingTrades =
+    typeof repository.getAllTrades === 'function' ? await repository.getAllTrades() : [];
+  if (Array.isArray(existingTrades) && existingTrades.length > 0) {
+    return existingTrades;
+  }
+
+  const legacyHoldings = await repository.getAllHoldings();
+  if (!Array.isArray(legacyHoldings) || legacyHoldings.length === 0) {
+    return [];
+  }
+
+  const backfilledTrades = legacyHoldings.map((holding) =>
+    buildTrade({
+      ticker: holding.ticker,
+      symbol: holding.symbol,
+      display_name: holding.display_name,
+      market: holding.market,
+      exchange: holding.exchange,
+      instrument_type: holding.instrument_type,
+      instrument_currency: holding.instrument_currency,
+      side: 'BUY',
+      quantity: holding.shares,
+      price: holding.buy_price,
+      source: 'legacy_backfill',
+      note: 'Backfilled from legacy holdings',
+      occurred_at: holding.added_at,
+    })
+  );
+
+  if (typeof repository.replaceAllTrades === 'function') {
+    await repository.replaceAllTrades(backfilledTrades);
+  }
+  return backfilledTrades;
+}
+
+async function getLedgerTrades() {
+  const existingTrades =
+    typeof repository.getAllTrades === 'function' ? await repository.getAllTrades() : [];
+  if (Array.isArray(existingTrades) && existingTrades.length > 0) {
+    return sortTradesChronologically(existingTrades);
+  }
+
+  const migratedTrades = await migrateLegacyHoldingsToTrades();
+  return sortTradesChronologically(migratedTrades);
+}
+
+async function getPositionStateForSymbol(symbol) {
+  const normalizedTicker = await normalizePortfolioTicker(symbol);
+  const states = derivePositionStates(await getLedgerTrades());
+  return states.get(normalizedTicker) || createPositionState({ ticker: normalizedTicker });
+}
+
+function buildPriceErrorPayload(symbol) {
+  return {
+    requested_symbol: symbol,
+    response_symbol: null,
+    price: null,
+    error: true,
+    error_message: `Unable to fetch current price (${symbol})`,
+  };
+}
+
+async function enrichTransactions(trades, baseCurrency) {
+  return Promise.all(
+    trades.map(async (trade) => {
+      let fxRateToBase = null;
+      let fxErrorMessage = null;
+
+      try {
+        fxRateToBase = await resolveFxRateToBase(trade.instrument_currency, baseCurrency);
+      } catch (error) {
+        fxErrorMessage = extractFxErrorMessage(error, trade.instrument_currency, baseCurrency);
+      }
+
+      return {
+        ...trade,
+        signed_quantity: signedQuantityDelta(trade.side, Number(trade.quantity)),
+        fx_rate_to_base:
+          Number.isFinite(Number(fxRateToBase)) && Number(fxRateToBase) > 0
+            ? roundMetric(Number(fxRateToBase), 6)
+            : null,
+        price_base:
+          Number.isFinite(Number(fxRateToBase)) && Number(fxRateToBase) > 0
+            ? roundMoney(Number(trade.price) * Number(fxRateToBase))
+            : null,
+        base_currency: baseCurrency,
+        price_error: fxRateToBase === null,
+        price_error_message: fxErrorMessage,
+      };
+    })
+  );
+}
+
+async function buildPortfolioSnapshot() {
+  const baseCurrency = getBaseCurrency();
+  const trades = await getLedgerTrades();
+  const positionStates = derivePositionStates(trades);
+  const activeStates = [...positionStates.values()].filter(
+    (state) => Number.isFinite(Number(state.quantity_signed)) && Number(state.quantity_signed) !== 0
+  );
+
+  if (activeStates.length === 0) {
+    const emptyPayload = {
       holdings: [],
+      positions: [],
       summary: {
         total_portfolio_value: 0,
+        total_gross_exposure: 0,
+        total_net_exposure: 0,
         total_invested_value: 0,
-        total_profit_loss: 0,
+        total_unrealized_pnl: 0,
+        total_realized_pnl: roundMoney(
+          [...positionStates.values()].reduce((sum, state) => sum + Number(state.realized_pnl_native || 0), 0)
+        ),
+        total_profit_loss: roundMoney(
+          [...positionStates.values()].reduce((sum, state) => sum + Number(state.realized_pnl_native || 0), 0)
+        ),
         total_profit_loss_percent: 0,
+        active_positions: 0,
+        long_positions: 0,
+        short_positions: 0,
+        winners_count: 0,
+        losers_count: 0,
+        has_price_errors: false,
         base_currency: baseCurrency,
       },
     };
 
     return {
-      ...emptyPortfolioPayload,
-      portfolio_intelligence: generatePortfolioInsights(emptyPortfolioPayload),
+      ...emptyPayload,
+      portfolio_intelligence: generatePortfolioInsights(emptyPayload),
     };
   }
 
-  const normalizedHoldings = [];
-  for (const holding of holdings) {
-    const normalizedSymbol = await normalizeHoldingTicker(holding.ticker);
-    normalizedHoldings.push({
-      ...holding,
-      ticker: normalizedSymbol,
-    });
-  }
-
-  const uniqueSymbols = [...new Set(normalizedHoldings.map((holding) => holding.ticker))];
-  const latestPriceBySymbol = new Map(
-    await Promise.all(
-      uniqueSymbols.map(async (symbol) => [symbol, await fetchLatestPriceWithCache(symbol)])
-    )
-  );
-
-  const enrichedHoldings = [];
-  for (let index = 0; index < normalizedHoldings.length; index += 1) {
-    const holding = normalizedHoldings[index];
-    const holdingSymbol = holding.ticker;
-    const instrumentMetadata = resolveInstrumentMetadata(holdingSymbol);
-    const instrumentCurrency = instrumentMetadata.instrument_currency;
-    const exchange = instrumentMetadata.exchange;
-
-    let fxRateToBase;
-    let fxErrorMessage = null;
+  const fxRatesByCurrency = new Map();
+  for (const state of positionStates.values()) {
+    const currency = normalizeCurrencyCode(state.instrument_currency);
+    if (fxRatesByCurrency.has(currency)) {
+      continue;
+    }
 
     try {
-      fxRateToBase = await resolveFxRateToBase(instrumentCurrency, baseCurrency);
+      fxRatesByCurrency.set(currency, {
+        rate: await resolveFxRateToBase(currency, baseCurrency),
+        error: null,
+      });
     } catch (error) {
-      fxRateToBase = null;
-      fxErrorMessage = extractFxErrorMessage(error, instrumentCurrency, baseCurrency);
+      fxRatesByCurrency.set(currency, {
+        rate: null,
+        error: extractFxErrorMessage(error, currency, baseCurrency),
+      });
     }
+  }
 
-    const latestPrice =
-      latestPriceBySymbol.get(holdingSymbol) || {
-        requested_symbol: holdingSymbol,
-        response_symbol: null,
-        price: null,
-        error: true,
-        error_message: `Unable to fetch current price (${holdingSymbol})`,
+  const latestPriceEntries = await Promise.all(
+    activeStates.map(async (state) => [state.ticker, await fetchLatestPriceWithCache(state.ticker)])
+  );
+  const latestPriceBySymbol = new Map(latestPriceEntries);
+
+  const holdings = [];
+  let totalGrossExposure = 0;
+  let totalNetExposure = 0;
+  let totalInvestedValue = 0;
+  let totalUnrealizedPnl = 0;
+  let totalRealizedPnl = 0;
+  let winnersCount = 0;
+  let losersCount = 0;
+  let hasPriceErrors = false;
+
+  for (const state of [...activeStates].sort((left, right) =>
+    left.ticker.localeCompare(right.ticker)
+  )) {
+    const latestPrice = latestPriceBySymbol.get(state.ticker) || buildPriceErrorPayload(state.ticker);
+    const fxInfo =
+      fxRatesByCurrency.get(normalizeCurrencyCode(state.instrument_currency)) || {
+        rate: null,
+        error: null,
       };
-    const responseSymbol =
-      typeof latestPrice.response_symbol === 'string' ? latestPrice.response_symbol : null;
+    const fxRateToBase =
+      Number.isFinite(Number(fxInfo.rate)) && Number(fxInfo.rate) > 0
+        ? roundMetric(Number(fxInfo.rate), 6)
+        : null;
+    const currentPriceNative =
+      Number.isFinite(Number(latestPrice.price)) && Number(latestPrice.price) > 0
+        ? roundMoney(Number(latestPrice.price))
+        : null;
+    const currentPriceBase =
+      currentPriceNative !== null && fxRateToBase !== null
+        ? roundMoney(currentPriceNative * fxRateToBase)
+        : null;
+    const quantitySigned = Number(state.quantity_signed);
+    const quantityAbs = Math.abs(quantitySigned);
+    const grossExposureBase =
+      currentPriceBase === null ? null : roundMoney(quantityAbs * currentPriceBase);
+    const netMarketValueBase =
+      currentPriceBase === null ? null : roundMoney(quantitySigned * currentPriceBase);
+    const investedValueBase =
+      fxRateToBase === null ? null : roundMoney(quantityAbs * Number(state.average_price) * fxRateToBase);
+    const realizedPnlBase =
+      fxRateToBase === null
+        ? roundMoney(Number(state.realized_pnl_native))
+        : roundMoney(Number(state.realized_pnl_native) * fxRateToBase);
 
-    console.log(
-      'Price fetched:',
-      responseSymbol || latestPrice.requested_symbol || holdingSymbol,
-      latestPrice.price
-    );
-
-    if (responseSymbol && responseSymbol !== holdingSymbol) {
-      console.warn(
-        `[portfolio:price-enrichment] symbol mismatch expected=${holdingSymbol} received=${responseSymbol}`
-      );
+    let unrealizedPnlBase = null;
+    if (currentPriceBase !== null && fxRateToBase !== null) {
+      const avgPriceBase = Number(state.average_price) * fxRateToBase;
+      if (quantitySigned > 0) {
+        unrealizedPnlBase = roundMoney((currentPriceBase - avgPriceBase) * quantityAbs);
+      } else {
+        unrealizedPnlBase = roundMoney((avgPriceBase - currentPriceBase) * quantityAbs);
+      }
     }
 
-    const priceResult = latestPrice;
-
-    const priceNative =
-      typeof priceResult.price === 'number' && Number.isFinite(priceResult.price)
-        ? roundMoney(priceResult.price)
-        : null;
-    const roundedFxRateToBase =
-      typeof fxRateToBase === 'number' && Number.isFinite(fxRateToBase) && fxRateToBase > 0
-        ? roundMetric(fxRateToBase, 6)
-        : null;
-    const priceBase =
-      priceNative !== null && roundedFxRateToBase !== null
-        ? roundMoney(priceNative * roundedFxRateToBase)
-        : null;
-    const marketValueBase =
-      priceBase === null ? null : roundMoney(Number(holding.shares) * priceBase);
-    const investedValueNative = roundMoney(Number(holding.shares) * Number(holding.buy_price));
-    const investedValue =
-      roundedFxRateToBase === null
+    const totalPnlBase =
+      unrealizedPnlBase === null ? null : roundMoney(realizedPnlBase + unrealizedPnlBase);
+    const totalPnlPercent =
+      totalPnlBase === null || !Number.isFinite(Number(investedValueBase)) || Number(investedValueBase) <= 0
         ? null
-        : roundMoney(investedValueNative * roundedFxRateToBase);
-    const profitLoss =
-      marketValueBase === null || investedValue === null
-        ? null
-        : roundMoney(marketValueBase - investedValue);
-    const profitLossPercent =
-      profitLoss === null || investedValue === 0
-        ? null
-        : roundPercent((profitLoss / investedValue) * 100);
-    const priceError = Boolean(priceResult.error) || roundedFxRateToBase === null;
-    const priceErrorMessage = priceResult.error
-      ? priceResult.error_message
-      : fxErrorMessage;
+        : roundPercent((totalPnlBase / Number(investedValueBase)) * 100);
+    const priceError = Boolean(latestPrice.error) || fxRateToBase === null;
+    const priceErrorMessage = latestPrice.error ? latestPrice.error_message : fxInfo.error;
 
-    console.log(
-      `[portfolio:price-enrichment] requested_symbol=${holdingSymbol} returned_price=${String(
-        latestPrice.price
-      )} returned_symbol=${String(responseSymbol)} assigned_symbol=${holdingSymbol} instrument_currency=${instrumentCurrency} base_currency=${baseCurrency} fx_rate=${String(
-        roundedFxRateToBase
-      )}`
-    );
+    if (grossExposureBase === null || currentPriceBase === null) {
+      hasPriceErrors = true;
+    } else {
+      totalGrossExposure += grossExposureBase;
+      totalNetExposure += Number(netMarketValueBase || 0);
+    }
 
-    enrichedHoldings.push({
-      id: holding.id,
-      ticker: holdingSymbol,
-      shares: holding.shares,
-      buy_price: holding.buy_price,
-      exchange,
-      instrument_currency: instrumentCurrency,
+    if (investedValueBase === null) {
+      hasPriceErrors = true;
+    } else {
+      totalInvestedValue += investedValueBase;
+    }
+
+    if (unrealizedPnlBase === null) {
+      hasPriceErrors = true;
+    } else {
+      totalUnrealizedPnl += unrealizedPnlBase;
+    }
+
+    totalRealizedPnl += realizedPnlBase;
+
+    if (Number.isFinite(Number(totalPnlBase))) {
+      if (Number(totalPnlBase) > 0) {
+        winnersCount += 1;
+      } else if (Number(totalPnlBase) < 0) {
+        losersCount += 1;
+      }
+    }
+
+    holdings.push({
+      id: state.ticker,
+      ticker: state.ticker,
+      symbol: state.symbol,
+      normalized: state.ticker,
+      display_name: state.display_name,
+      market: state.market,
+      exchange: state.exchange,
+      instrument_type: state.instrument_type,
+      instrument_currency: state.instrument_currency,
       base_currency: baseCurrency,
-      price_native: priceNative,
-      fx_rate_to_base: roundedFxRateToBase,
-      price_base: priceBase,
-      market_value_base: marketValueBase,
-      current_price: priceBase,
-      current_value: marketValueBase,
-      invested_value: investedValue,
-      profit_loss: profitLoss,
-      profit_loss_percent: profitLossPercent,
+      side: quantitySigned > 0 ? 'LONG' : 'SHORT',
+      quantity: quantityAbs,
+      quantity_signed: quantitySigned,
+      shares: quantityAbs,
+      avg_price: roundMoney(Number(state.average_price)),
+      buy_price: roundMoney(Number(state.average_price)),
+      price_native: currentPriceNative,
+      fx_rate_to_base: fxRateToBase,
+      price_base: currentPriceBase,
+      current_price: currentPriceBase,
+      current_value: grossExposureBase,
+      gross_exposure_base: grossExposureBase,
+      net_market_value_base: netMarketValueBase,
+      invested_value: investedValueBase,
+      unrealized_pnl: unrealizedPnlBase,
+      realized_pnl: realizedPnlBase,
+      profit_loss: totalPnlBase,
+      profit_loss_percent: totalPnlPercent,
       price_error: priceError,
       price_error_message: priceError ? priceErrorMessage : null,
+      last_trade_at: state.last_trade_at,
     });
   }
 
-  let totalPortfolioValue = 0;
-  let totalInvestedValue = 0;
-  let hasPriceErrors = false;
+  const summary = {
+    total_portfolio_value: roundMoney(totalGrossExposure),
+    total_gross_exposure: roundMoney(totalGrossExposure),
+    total_net_exposure: roundMoney(totalNetExposure),
+    total_invested_value: roundMoney(totalInvestedValue),
+    total_unrealized_pnl: roundMoney(totalUnrealizedPnl),
+    total_realized_pnl: roundMoney(totalRealizedPnl),
+    total_profit_loss: roundMoney(totalRealizedPnl + totalUnrealizedPnl),
+    total_profit_loss_percent:
+      totalInvestedValue > 0
+        ? roundPercent(((totalRealizedPnl + totalUnrealizedPnl) / totalInvestedValue) * 100)
+        : 0,
+    active_positions: holdings.length,
+    long_positions: holdings.filter((holding) => holding.side === 'LONG').length,
+    short_positions: holdings.filter((holding) => holding.side === 'SHORT').length,
+    winners_count: winnersCount,
+    losers_count: losersCount,
+    has_price_errors: hasPriceErrors,
+    base_currency: baseCurrency,
+  };
 
-  enrichedHoldings.forEach((holding) => {
-    if (holding.current_value === null) {
-      hasPriceErrors = true;
-    } else {
-      totalPortfolioValue += holding.current_value;
-    }
-    if (typeof holding.invested_value === 'number' && Number.isFinite(holding.invested_value)) {
-      totalInvestedValue += holding.invested_value;
-    } else {
-      hasPriceErrors = true;
-    }
-  });
-
-  const totalProfitLoss = hasPriceErrors
-    ? null
-    : roundMoney(totalPortfolioValue - totalInvestedValue);
-  const totalProfitLossPercent =
-    totalProfitLoss === null || totalInvestedValue === 0
-      ? null
-      : roundPercent((totalProfitLoss / totalInvestedValue) * 100);
-
-  const portfolioPayload = {
-    holdings: enrichedHoldings,
-    summary: {
-      total_portfolio_value: roundMoney(totalPortfolioValue),
-      total_invested_value: roundMoney(totalInvestedValue),
-      total_profit_loss: totalProfitLoss,
-      total_profit_loss_percent: totalProfitLossPercent,
-      has_price_errors: hasPriceErrors,
-      base_currency: baseCurrency,
-    },
+  const payload = {
+    holdings,
+    positions: holdings,
+    summary,
   };
 
   return {
-    ...portfolioPayload,
-    portfolio_intelligence: generatePortfolioInsights(portfolioPayload),
+    ...payload,
+    portfolio_intelligence: generatePortfolioInsights(payload),
   };
 }
 
 async function getPortfolioHistory(daysInput) {
   const days = normalizeHistoryDays(daysInput);
   const baseCurrency = getBaseCurrency();
-  const holdings = await repository.getAllHoldings();
+  const trades = await getLedgerTrades();
   const dates = buildHistoryDateRange(days);
 
-  if (!Array.isArray(holdings) || holdings.length === 0) {
+  if (!Array.isArray(trades) || trades.length === 0) {
     return {
       symbol_count: 0,
       days,
@@ -710,17 +977,14 @@ async function getPortfolioHistory(daysInput) {
     };
   }
 
-  const normalizedHoldings = [];
-  for (const holding of holdings) {
-    const normalizedSymbol = await normalizeHoldingTicker(holding.ticker);
-    normalizedHoldings.push({
-      ...holding,
-      ticker: normalizedSymbol,
-    });
-  }
+  const tradesBySymbol = trades.reduce((map, trade) => {
+    const symbolTrades = map.get(trade.ticker) || [];
+    symbolTrades.push(trade);
+    map.set(trade.ticker, symbolTrades);
+    return map;
+  }, new Map());
+  const symbols = [...tradesBySymbol.keys()];
 
-  const symbolSharesMap = groupHoldingsBySymbol(normalizedHoldings);
-  const symbols = [...symbolSharesMap.keys()];
   const historyResults = await Promise.all(
     symbols.map(async (symbol) => [symbol, await fetchHistoricalPrices(symbol, days)])
   );
@@ -745,7 +1009,9 @@ async function getPortfolioHistory(daysInput) {
 
   const symbolHistoryMap = new Map();
   const symbolFxRateMap = new Map();
-  const fxRateBySymbol = new Map(fxRateResults.map(([symbol, fxRate, errorMessage]) => [symbol, { fxRate, errorMessage }]));
+  const fxRateBySymbol = new Map(
+    fxRateResults.map(([symbol, fxRate, errorMessage]) => [symbol, { fxRate, errorMessage }])
+  );
   let successfulSymbolCount = 0;
 
   for (const [symbol, result] of historyResults) {
@@ -765,23 +1031,80 @@ async function getPortfolioHistory(daysInput) {
       continue;
     }
 
-    if (fxResult?.errorMessage) {
-      console.error(
-        `[portfolio:history-fx] symbol=${symbol} error=${fxResult.errorMessage}`
-      );
-    }
     symbolHistoryMap.set(symbol, []);
     symbolFxRateMap.set(symbol, 0);
   }
 
-  if (symbols.length > 0 && successfulSymbolCount === 0) {
-    throw createHttpError(502, 'Unable to fetch portfolio history');
+  if (successfulSymbolCount === 0) {
+    return {
+      symbol_count: symbols.length,
+      days,
+      equity_curve: dates.map((date) => ({
+        date,
+        portfolio_value: 0,
+      })),
+    };
   }
+
+  const symbolTimelineMap = new Map(
+    symbols.map((symbol) => [symbol, buildQuantityTimeline(dates, tradesBySymbol.get(symbol) || [])])
+  );
+
+  const historyStates = new Map();
+  for (const [symbol, prices] of symbolHistoryMap.entries()) {
+    historyStates.set(symbol, {
+      index: 0,
+      lastKnownPrice: null,
+      prices,
+    });
+  }
+
+  const equityCurve = dates.map((date, dateIndex) => {
+    let portfolioValue = 0;
+
+    for (const symbol of symbols) {
+      const timeline = symbolTimelineMap.get(symbol) || [];
+      const signedQuantity = Number(timeline[dateIndex] || 0);
+      const quantityAbs = Math.abs(signedQuantity);
+      if (quantityAbs <= 0) {
+        continue;
+      }
+
+      const historyState = historyStates.get(symbol);
+      const fxRateToBase = Number(symbolFxRateMap.get(symbol) || 0);
+      if (!historyState || !Array.isArray(historyState.prices) || historyState.prices.length === 0) {
+        continue;
+      }
+      if (!Number.isFinite(fxRateToBase) || fxRateToBase <= 0) {
+        continue;
+      }
+
+      while (
+        historyState.index < historyState.prices.length &&
+        historyState.prices[historyState.index].date <= date
+      ) {
+        historyState.lastKnownPrice = historyState.prices[historyState.index].close;
+        historyState.index += 1;
+      }
+
+      if (
+        typeof historyState.lastKnownPrice === 'number' &&
+        Number.isFinite(historyState.lastKnownPrice)
+      ) {
+        portfolioValue += quantityAbs * historyState.lastKnownPrice * fxRateToBase;
+      }
+    }
+
+    return {
+      date,
+      portfolio_value: roundMoney(portfolioValue),
+    };
+  });
 
   return {
     symbol_count: symbols.length,
     days,
-    equity_curve: buildEquityCurve(dates, symbolSharesMap, symbolHistoryMap, symbolFxRateMap),
+    equity_curve: equityCurve,
   };
 }
 
@@ -947,19 +1270,155 @@ async function getPortfolioAdvisor(daysInput) {
   return generatePortfolioRecommendations(metrics);
 }
 
+async function createTrade(input) {
+  const trade = await buildTradeFromInput(input);
+  const currentState = await getPositionStateForSymbol(trade.ticker);
+  applyTradeToPositionState(currentState, trade, { validate: true });
+  const [createdTrade] = await repository.appendTrades([trade]);
+  return createdTrade;
+}
+
+async function adjustPosition(symbol, input) {
+  const payload = input || {};
+  const normalizedTicker = await normalizePortfolioTicker(symbol);
+  const targetQuantityRaw = Number(payload.target_quantity);
+  if (!Number.isFinite(targetQuantityRaw)) {
+    throw createHttpError(400, 'target_quantity must be a valid number');
+  }
+
+  const targetQuantity = roundMetric(targetQuantityRaw, 6);
+  const currentState = await getPositionStateForSymbol(normalizedTicker);
+  const currentQuantity = roundMetric(Number(currentState.quantity_signed || 0), 6);
+
+  if (currentQuantity === targetQuantity) {
+    return [];
+  }
+
+  let referencePrice = null;
+  if (payload.price !== undefined && payload.price !== null && payload.price !== '') {
+    const numericPrice = Number(payload.price);
+    if (!Number.isFinite(numericPrice) || numericPrice <= 0) {
+      throw createHttpError(400, 'price must be a positive number');
+    }
+    referencePrice = numericPrice;
+  }
+
+  if (referencePrice === null && Number(currentState.average_price) > 0) {
+    referencePrice = Number(currentState.average_price);
+  }
+
+  if (referencePrice === null) {
+    const latestPrice = await fetchLatestPriceWithCache(normalizedTicker);
+    if (!latestPrice.error && Number(latestPrice.price) > 0) {
+      referencePrice = Number(latestPrice.price);
+    }
+  }
+
+  if (referencePrice === null) {
+    throw createHttpError(400, 'price is required to adjust a position without an existing cost basis');
+  }
+
+  const adjustmentNote =
+    typeof payload.note === 'string' && payload.note.trim()
+      ? payload.note.trim()
+      : `Adjustment to target quantity ${targetQuantity}`;
+
+  const generatedTrades = [];
+  let workingQuantity = currentQuantity;
+
+  const enqueueTrade = async (side, quantity) => {
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      return;
+    }
+    const trade = await buildTradeFromInput(
+      {
+        ticker: normalizedTicker,
+        quantity,
+        price: referencePrice,
+        note: adjustmentNote,
+        source: 'adjustment',
+      },
+      { sideOverride: side }
+    );
+    generatedTrades.push(trade);
+    workingQuantity += signedQuantityDelta(side, quantity);
+  };
+
+  if (targetQuantity === 0) {
+    if (workingQuantity > 0) {
+      await enqueueTrade('SELL', workingQuantity);
+    } else if (workingQuantity < 0) {
+      await enqueueTrade('COVER', Math.abs(workingQuantity));
+    }
+  } else if (targetQuantity > 0) {
+    if (workingQuantity < 0) {
+      await enqueueTrade('COVER', Math.abs(workingQuantity));
+    }
+    if (workingQuantity < targetQuantity) {
+      await enqueueTrade('BUY', targetQuantity - workingQuantity);
+    } else if (workingQuantity > targetQuantity) {
+      await enqueueTrade('SELL', workingQuantity - targetQuantity);
+    }
+  } else if (targetQuantity < 0) {
+    if (workingQuantity > 0) {
+      await enqueueTrade('SELL', workingQuantity);
+    }
+    if (workingQuantity > targetQuantity) {
+      await enqueueTrade('SHORT', Math.abs(targetQuantity - workingQuantity));
+    } else if (workingQuantity < targetQuantity) {
+      await enqueueTrade('COVER', Math.abs(workingQuantity - targetQuantity));
+    }
+  }
+
+  if (generatedTrades.length === 0) {
+    return [];
+  }
+
+  return repository.appendTrades(generatedTrades);
+}
+
+async function getTransactions() {
+  const baseCurrency = getBaseCurrency();
+  const trades = await getLedgerTrades();
+  const enrichedTrades = await enrichTransactions([...trades].reverse(), baseCurrency);
+  return {
+    transactions: enrichedTrades,
+    summary: {
+      count: enrichedTrades.length,
+      base_currency: baseCurrency,
+    },
+  };
+}
+
 async function addHolding(input) {
   const payload = input || {};
-  const normalizedSymbol = await symbolsService.normalizeSymbol(payload.ticker);
-  const item = buildHolding({
-    ...payload,
-    ticker: normalizedSymbol,
+  const legacyHolding = buildHolding({
+    ticker: await normalizePortfolioTicker(payload.ticker),
+    shares: payload.shares,
+    buy_price: payload.buy_price,
+    display_name: payload.display_name,
   });
-  return repository.addHolding(item);
+  const createdTrade = await createTrade({
+    ticker: legacyHolding.ticker,
+    quantity: legacyHolding.shares,
+    price: legacyHolding.buy_price,
+    side: 'BUY',
+    display_name: legacyHolding.display_name,
+    source: 'legacy_add',
+    note: 'Legacy add-holding compatibility path',
+  });
+
+  return {
+    id: createdTrade.id,
+    ticker: createdTrade.ticker,
+    shares: createdTrade.quantity,
+    buy_price: createdTrade.price,
+    added_at: createdTrade.occurred_at,
+  };
 }
 
 async function getHoldings() {
-  const holdings = await repository.getAllHoldings();
-  return calculateMetrics(holdings);
+  return buildPortfolioSnapshot();
 }
 
 async function deleteHolding(id) {
@@ -967,21 +1426,28 @@ async function deleteHolding(id) {
     throw createHttpError(400, 'id is required');
   }
 
-  const deleted = await repository.deleteHoldingById(id.trim());
-  if (!deleted) {
-    throw createHttpError(404, 'Holding not found');
-  }
+  throw createHttpError(
+    410,
+    'Direct holding deletion is no longer supported. Use the position adjustment flow instead.'
+  );
+}
+
+async function calculateMetrics() {
+  return getHoldings();
 }
 
 module.exports = {
   __clearCachedSymbolPrices: clearCachedSymbolPrices,
   addHolding,
+  adjustPosition,
   calculateMetrics,
+  createTrade,
   deleteHolding,
   generatePortfolioRecommendations,
   getPortfolioAdvisor,
   getPortfolioHistory,
   getPortfolioInsights,
   getHoldings,
+  getTransactions,
   normalizeHistoryDays,
 };

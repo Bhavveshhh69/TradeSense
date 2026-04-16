@@ -4,9 +4,14 @@ const apiClient = axios.create({
   timeout: 30000,
 })
 
-export async function searchSymbols(query) {
+export async function searchSymbols(query, filters = {}) {
   const response = await apiClient.get('/api/symbols/search', {
-    params: { q: query },
+    params: {
+      q: query,
+      market: filters.market,
+      kind: filters.kind,
+      limit: filters.limit,
+    },
   })
   return response.data
 }

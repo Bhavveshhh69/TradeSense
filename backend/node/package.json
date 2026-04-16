@@ -4,7 +4,8 @@
   "main": "server/index.js",
   "type": "commonjs",
   "scripts": {
-    "test": "jest --runInBand"
+    "test": "jest --runInBand",
+    "build:market-master": "node scripts/build_market_master.js"
   },
   "dependencies": {
     "axios": "^1.6.0",
